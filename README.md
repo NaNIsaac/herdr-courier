@@ -2,7 +2,7 @@
 
 A planned terminal-first **human console and prompt dispatcher** for [herdr](https://github.com/search?q=herdr&type=repositories) workspaces. Its primary purpose is to keep human typing separate from agent-generated prompts and make terminal/SSH operation possible without a browser.
 
-> **Status:** `hcd` (the prompt dispatcher) and `hc` (its CLI) work and are tested against a real herdr pane. Status, pane management and diagnostics commands are not written yet.
+> **Status:** `hcd` (the prompt dispatcher), `hc send/status/hold/release/cancel` and `hc agents` work; the dispatcher is tested against a real herdr pane. Pane management and `hc doctor` are not written yet.
 
 Agents send with `hc send <target> <text>` instead of `herdr agent prompt`. hcd queues the message per pane and types it only when the target's input box is empty, so a person's half-typed message is never submitted with it. Design and send conditions: [docs/DISPATCH.md](docs/DISPATCH.md).
 
@@ -25,6 +25,18 @@ hc send boss "[lane] status report" --wait --timeout 120000
 hc status
 hc hold boss --reason "typing on the phone" --ttl 600
 hc release boss
+```
+
+`hc agents` needs no hcd. It lists every pane with its tab label, live agent name, status and
+hcd queue, sized for a phone terminal, and warns when a tab is not named after the agent it holds.
+herdr's mobile layout (62-column Termux screens fall under the default `ui.mobile_width_threshold`
+of 64) shows only the tab label in its header, never the pane or agent name, so the tab label is
+what a phone user goes by.
+
+```sh
+hc agents            # table for the current terminal width
+hc agents --wide     # adds the terminal title column
+hc agents --json
 ```
 
 Only one `hcd` runs per state directory; a second one exits. If `hcd` is not running, `hc send` exits with status 3 and prints the manual path:

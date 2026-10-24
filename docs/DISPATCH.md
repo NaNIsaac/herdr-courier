@@ -21,6 +21,7 @@ src/herdr_console/
   daemon.py           hcd: instance lock, endpoint file, worker thread, /api/dispatch/* over http.server
   client.py           standard-library client for those routes (hc and other programs)
   cli.py              hc
+  agents.py           hc agents: panes joined with tabs, live agent names and the hcd queue
   state.py            state directory: journal, lock, endpoint file
 ```
 

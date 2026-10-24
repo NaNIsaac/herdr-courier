@@ -16,7 +16,9 @@ import urllib.parse
 import uuid
 from typing import Any, NoReturn
 
+from . import agents
 from .client import LostContact, Refused, Unavailable, request
+from .core.transport import CliHerdr, HerdrError
 
 EXIT_FAILED = 1
 EXIT_UNAVAILABLE = 3
@@ -167,6 +169,43 @@ def cmd_release(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_agents(args: argparse.Namespace) -> int:
+    try:
+        reply = request("GET", "status")
+    except Unavailable as exc:
+        dispatch, hcd = None, f"not running ({exc}); hc send would fail with status 3"
+    except (LostContact, Refused) as exc:
+        dispatch, hcd = None, f"error ({exc})"
+    else:
+        dispatch = reply["status"]
+        worker = reply.get("worker") or {}
+        queued = sum(len(p["pending"]) for p in dispatch["panes"].values())
+        held = sum(1 for p in dispatch["panes"].values() if p["hold"])
+        hcd = (
+            f"running, {queued} queued, {held} held"
+            if worker.get("alive")
+            else "answers but its worker is not running; nothing is being sent"
+        )
+    try:
+        rows = agents.collect(CliHerdr(), dispatch)
+    except HerdrError as exc:
+        print(f"hc: herdr did not answer ({exc})", file=sys.stderr)
+        return EXIT_FAILED
+    notes = agents.warnings(rows)
+    if args.json:
+        print(
+            json.dumps(
+                {"hcd": hcd, "rows": [r.as_dict() for r in rows], "warnings": notes},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    width = args.width or agents.terminal_width()
+    print(agents.render(rows, notes, width=width, hcd=hcd, wide=args.wide))
+    return 0
+
+
 def cmd_cancel(args: argparse.Namespace) -> int:
     item = call("POST", "cancel", {"id": args.id})["item"]
     print(f"cancelled {item['id']} to {item['target']}")
@@ -203,6 +242,12 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("release", help="drop a hold")
     p.add_argument("target")
     p.set_defaults(func=cmd_release)
+
+    p = sub.add_parser("agents", help="every pane with its tab, agent name, status and hcd queue")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--width", type=int, help="table width (default: the terminal, 62 if unknown)")
+    p.add_argument("--wide", action="store_true", help="add the terminal title column")
+    p.set_defaults(func=cmd_agents)
 
     p = sub.add_parser("cancel", help="drop a queued message")
     p.add_argument("id")

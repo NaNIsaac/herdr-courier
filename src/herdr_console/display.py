@@ -36,6 +36,22 @@ def clip(text: str, width: int) -> str:
     return fit(" ".join(text.split()), width).rstrip()
 
 
+def clip_left(text: str, width: int) -> str:
+    """Keep the end of ``text`` (the useful part of a path) within ``width`` cells."""
+    if cols(text) <= width:
+        return text
+    if width <= 1:
+        return ELLIPSIS[:width]
+    out, used = [], 0
+    for c in reversed(text):
+        w = cols(c)
+        if used + w > width - 1:
+            break
+        out.append(c)
+        used += w
+    return ELLIPSIS + "".join(reversed(out))
+
+
 def wrap(text: str, width: int, first: str, rest: str) -> list[str]:
     """Greedy word wrap by display columns; textwrap counts code points, not cells.
 

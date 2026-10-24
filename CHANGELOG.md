@@ -11,6 +11,8 @@
   start.
 - New commands: `courier agents` (panes with tab, agent name, status and queue), `courier panes`
   (panes by tab with label and working directory) and `courier doctor` (read-only health check).
+- `courier agents --color[=auto|always|never]`: status colours, bold agent names, waiting queues in
+  yellow, shell panes dimmed. `auto` (the default) colours a terminal unless `NO_COLOR` is set.
 - `courier status` fits the terminal width, 62 columns when it cannot tell.
 - `config.toml` in the state directory overrides the pane label rule, the working-directory
   variables, the other-writer endpoint files and the Ovis URL; `config.example.toml` lists the

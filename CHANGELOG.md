@@ -4,7 +4,8 @@
 
 - Renamed from herdr-console: the package is `herdr-courier`, the module `herdr_courier`, the
   command `courier`. `hc` remains as a short name for the same program.
-- The daemon is `courier serve` (or `hc serve`); the separate `hcd` executable is gone.
+- The daemon is `courier serve`. `hc serve` and `hcd` are the same command, so there is one
+  program and one entry point to the dispatcher.
 - Environment variables are `COURIER_STATE_DIR` and `COURIER_SOURCE` (were `HC_*`). The state
   directory is `herdr-courier`; `courier serve` moves a `herdr-console` directory on its first
   start.

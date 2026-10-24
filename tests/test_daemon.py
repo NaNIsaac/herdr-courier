@@ -401,16 +401,30 @@ def test_endpoint_pointing_at_another_server_counts_as_unavailable(tmp_path, mon
         other.server_close()
 
 
-def test_serve_is_a_subcommand_of_courier_and_hc(capsys):
-    # One program: hc is the same entry point, and no separate daemon executable is installed.
+def help_text(run, capsys) -> str:
+    with pytest.raises(SystemExit) as exc:
+        run()
+    assert exc.value.code == 0
+    return capsys.readouterr().out
+
+
+def test_serve_is_a_subcommand_of_courier_and_hc_and_hcd_is_its_alias(capsys):
     project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text("utf-8"))
     assert project["project"]["scripts"] == {
         "courier": "herdr_courier.cli:main",
         "hc": "herdr_courier.cli:main",
+        "hcd": "herdr_courier.cli:serve_main",
     }
-    with pytest.raises(SystemExit) as exc:
-        cli.main(["serve", "--help"])
-    assert exc.value.code == 0
-    out = capsys.readouterr().out
+    out = help_text(lambda: cli.main(["serve", "--help"]), capsys)
     assert out.startswith("usage: courier serve")
     assert "--port" in out and "--transport" in out
+    alias = help_text(lambda: cli.serve_main(["--help"]), capsys)
+    assert alias.startswith("usage: hcd")
+    assert alias.split("\n\n", 1)[1] == out.split("\n\n", 1)[1]
+
+
+def test_hcd_is_refused_like_courier_serve_while_one_runs(tmp_path, monkeypatch):
+    first = InstanceLock(lock_path(tmp_path))
+    monkeypatch.setenv("COURIER_STATE_DIR", str(tmp_path))
+    assert cli.serve_main(["--port", "0"]) == 1
+    first.release()

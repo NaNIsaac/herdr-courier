@@ -1,0 +1,31 @@
+[project]
+name = "herdr-console"
+version = "0.1.0"
+description = "Prompt dispatcher and Human Console for herdr: agent prompts never land on half-typed human input"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Isaac Yong", email = "isaacyong@naver.com" }]
+requires-python = ">=3.13"
+dependencies = []
+
+[project.scripts]
+hc = "herdr_console.cli:main"
+hcd = "herdr_console.daemon:main"
+
+[build-system]
+requires = ["uv_build>=0.11,<0.13"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: needs a live herdr session (HERDR_ENV=1) and HC_INTEGRATION=1"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "B"]

@@ -1,10 +1,10 @@
-"""hc agents: every pane as a command destination, with the names a phone screen leaves out.
+"""courier agents: every pane as a command destination, with the names a phone screen leaves out.
 
 herdr's mobile layout (terminal width at or below ``ui.mobile_width_threshold``, 64 by default)
 draws the workspace label, ``tab <label> · n/m`` and status counts in its header. Pane names, agent
 names and pane borders are not drawn there (herdr 0.9.5, ``src/client/shell/mobile.rs``). On a
 phone the tab label is the only identity on screen, so a tab has to be named after the agent it
-holds; this table joins tabs, panes, agents and hcd's queue so the mismatches show.
+holds; this table joins tabs, panes, agents and courierd's queue so the mismatches show.
 """
 
 from dataclasses import asdict, dataclass
@@ -40,7 +40,7 @@ class Row:
 
 
 def collect(herdr: Workspace, dispatch: dict[str, Any] | None) -> list[Row]:
-    """One row per pane, in tab order; hcd's queue and holds are joined in when it answered."""
+    """One row per pane, in tab order; courierd's queue and holds are joined in when it answered."""
     tabs = {t["tab_id"]: t for t in herdr.tab_list()}
     agents = {a["pane_id"]: a for a in herdr.agent_list()}
     queues = (dispatch or {}).get("panes") or {}
@@ -89,7 +89,7 @@ def warnings(rows: list[Row]) -> list[str]:
     return out
 
 
-def _hcd_cell(row: Row) -> str:
+def _queue_cell(row: Row) -> str:
     parts = []
     if row.queued:
         parts.append(f"q{row.queued}")
@@ -103,15 +103,15 @@ def render(
     notes: list[str],
     *,
     width: int,
-    hcd: str,
+    courierd: str,
     wide: bool = False,
 ) -> str:
     """A table that fits a phone terminal; ``wide`` adds the terminal title column."""
     width = max(width, 40)
     pane_w = max([len("pane"), *(cols(r.pane_id) for r in rows)])
     status_w = max([len("status"), *(cols(r.status) for r in rows)])
-    hcd_w = max([len("hcd"), *(cols(_hcd_cell(r)) for r in rows)])
-    fixed = 2 + pane_w + 2 + 2 + status_w + 2 + hcd_w
+    queue_w = max([len("queue"), *(cols(_queue_cell(r)) for r in rows)])
+    fixed = 2 + pane_w + 2 + 2 + status_w + 2 + queue_w
     flexible = width - fixed - 2
     tab_w = max(6, flexible // 2)
     agent_w = max(6, flexible - tab_w)
@@ -119,14 +119,14 @@ def render(
         tab_w = max(6, flexible // 3)
         agent_w = max(6, flexible // 3)
 
-    def line(mark: str, pane: str, tab: str, agent: str, status: str, hcd_cell: str, title: str):
+    def line(mark: str, pane: str, tab: str, agent: str, status: str, queue_cell: str, title: str):
         cells = [
             mark,
             fit(pane, pane_w),
             fit(tab, tab_w),
             fit(agent, agent_w),
             fit(status, status_w),
-            fit(hcd_cell, hcd_w),
+            fit(queue_cell, queue_w),
         ]
         text = " ".join(cells)
         if wide:
@@ -134,8 +134,8 @@ def render(
         return text.rstrip()
 
     out = [
-        *wrap(f"hcd: {hcd}", width, "", "  "),
-        line(" ", "pane", "tab", "agent", "status", "hcd", "title"),
+        *wrap(f"courierd: {courierd}", width, "", "  "),
+        line(" ", "pane", "tab", "agent", "status", "queue", "title"),
     ]
     for row in rows:
         out.append(
@@ -145,7 +145,7 @@ def render(
                 row.tab,
                 row.agent or "-",
                 row.status,
-                _hcd_cell(row),
+                _queue_cell(row),
                 row.title,
             )
         )

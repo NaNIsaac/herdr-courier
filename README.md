@@ -1,70 +1,91 @@
-# herdr-console
+# herdr-courier
 
 A planned terminal-first **human console and prompt dispatcher** for [herdr](https://github.com/search?q=herdr&type=repositories) workspaces. Its primary purpose is to keep human typing separate from agent-generated prompts and make terminal/SSH operation possible without a browser.
 
-> **Status:** `hcd` (the prompt dispatcher), `hc send/status/hold/release/cancel` and `hc agents` work; the dispatcher is tested against a real herdr pane. Pane management and `hc doctor` are not written yet.
+> **Status:** `courierd` (the prompt dispatcher), `courier send/status/hold/release/cancel` and `courier agents` work; the dispatcher is tested against a real herdr pane. Pane management and `courier doctor` are not written yet.
 
-Agents send with `hc send <target> <text>` instead of `herdr agent prompt`. hcd queues the message per pane and types it only when the target's input box is empty, so a person's half-typed message is never submitted with it. Design and send conditions: [docs/DISPATCH.md](docs/DISPATCH.md).
+Agents send with `courier send <target> <text>` instead of `herdr agent prompt`. courierd queues the message per pane and types it only when the target's input box is empty, so a person's half-typed message is never submitted with it. Design and send conditions: [docs/DISPATCH.md](docs/DISPATCH.md).
 
 ## Install
 
 ```sh
-uv tool install git+https://github.com/NaNIsaac/herdr-console
+uv tool install git+https://github.com/NaNIsaac/herdr-courier
 ```
+
+This installs `courier` and `courierd`, and the short aliases `hc` and `hcd` for the same two
+programs.
+
+## Configuration
+
+Every setting has a built-in default (`src/herdr_courier/defaults.py`). To change one, copy
+[config.example.toml](config.example.toml) to `config.toml` in the state directory
+(`%LOCALAPPDATA%\herdr-courier` on Windows, `~/.local/state/herdr-courier` elsewhere,
+`COURIER_STATE_DIR` to move it) and keep only the keys you change. An unknown key or a wrong type
+is an error, reported by `courier doctor` and `courier panes`.
+
+| key | default | used by |
+| --- | --- | --- |
+| `panes.separator` | `" · "` | label rule: `<prefix> · <name>` |
+| `panes.worker_separator` | `" › "` | label rule: `<tab> › <task>` |
+| `panes.named_after_tab` | `["lane", "core", "isaac"]` | prefixes whose name must be the tab label |
+| `panes.named_freely` | `["infra"]` | prefixes that take any name; both lists `[]` turns the check off |
+| `panes.path_variables` | `["DEV", "DATA"]` | working directories shown as `$DEV\...` |
+| `doctor.other_writers` | `["~/.isaac-control-center/dispatch/endpoint.json"]` | endpoint files of other pane writers |
+| `doctor.ovis_url` | `"http://127.0.0.1:7317"` | Ovis health check; `""` skips it |
 
 ## Run
 
-> **Not yet as a permanent service.** Until isaac-control-center stops running its own in-process dispatcher (its PR that switches it to read hcd), do not keep hcd running: icc's dispatcher defaults to on and uses another lock directory, so two writers could type into the same pane, and both packages install an `hc` command.
+> **Not yet as a permanent service.** Until isaac-control-center stops running its own in-process dispatcher (its PR that switches it to read courierd), do not keep courierd running: icc's dispatcher defaults to on and uses another lock directory, so two writers could type into the same pane, and both packages install an `hc` command.
 
 Start the dispatcher in a herdr shell pane (not in an agent's background shell), then send from anywhere on the same machine:
 
 ```sh
-hcd
-hc send boss "[lane] status report"
-hc send boss "[lane] status report" --wait --timeout 120000
-hc status
-hc hold boss --reason "typing on the phone" --ttl 600
-hc release boss
+courierd
+courier send boss "[lane] status report"
+courier send boss "[lane] status report" --wait --timeout 120000
+courier status
+courier hold boss --reason "typing on the phone" --ttl 600
+courier release boss
 ```
 
-`hc status` wraps to the terminal width (62 columns when it cannot tell; `--width` sets it), so a
+`courier status` wraps to the terminal width (62 columns when it cannot tell; `--width` sets it), so a
 phone shows every line whole. Delivered items in its recent log take one line each; failures wrap.
 
-`hc agents` needs no hcd. It lists every pane with its tab label, live agent name, status and
-hcd queue, sized for a phone terminal, and warns when a tab is not named after the agent it holds.
+`courier agents` needs no courierd. It lists every pane with its tab label, live agent name, status and
+courierd queue, sized for a phone terminal, and warns when a tab is not named after the agent it holds.
 herdr's mobile layout (62-column Termux screens fall under the default `ui.mobile_width_threshold`
 of 64) shows only the tab label in its header, never the pane or agent name, so the tab label is
 what a phone user goes by.
 
 ```sh
-hc agents            # table for the current terminal width
-hc agents --wide     # adds the terminal title column
-hc agents --json
+courier agents            # table for the current terminal width
+courier agents --wide     # adds the terminal title column
+courier agents --json
 ```
 
-`hc doctor` reads without changing anything and says what is wrong and how to fix it: whether
-herdr answers, whether hcd is running (endpoint file, pid, status route), whether its worker is
+`courier doctor` reads without changing anything and says what is wrong and how to fix it: whether
+herdr answers, whether courierd is running (endpoint file, pid, status route), whether its worker is
 dispatching, items waiting over 10 minutes, holds with no expiry and failures in the last hour,
 unreadable journal lines, a second pane writer (isaac-control-center's in-process dispatcher), and
 Ovis health. It exits 1 when any check fails, so scripts can gate on it.
 
 ```sh
-hc doctor
-hc doctor --json
+courier doctor
+courier doctor --json
 ```
 
-`hc panes` lays the workspace out by tab: each pane's label and working directory (`$DEV`,
+`courier panes` lays the workspace out by tab: each pane's label and working directory (`$DEV`,
 `$DATA` and `~` spelled out, long paths cut from the left). It warns when a pane label breaks the
-team's naming rule: `core`, `isaac` and `lane` panes are `<prefix> · <tab>`, `infra` panes
-`infra · <process>`, and a worker a lane starts `<tab> › <task>`; each warning carries the
-`herdr pane rename` command that fixes it.
+naming rule (by default `lane`, `core` and `isaac` panes are `<prefix> · <tab>`, `infra` panes
+`infra · <process>`, and a worker another pane starts `<tab> › <task>`; see Configuration); each
+warning carries the `herdr pane rename` command that fixes it.
 
 ```sh
-hc panes
-hc panes --json
+courier panes
+courier panes --json
 ```
 
-Only one `hcd` runs per state directory; a second one exits. If `hcd` is not running, `hc send` exits with status 3 and prints the manual path:
+Only one `courierd` runs per state directory; a second one exits. If `courierd` is not running, `courier send` exits with status 3 and prints the manual path:
 
 ```sh
 herdr agent read boss --source recent --lines 12 --format ansi

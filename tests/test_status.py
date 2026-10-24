@@ -1,4 +1,4 @@
-from herdr_console import cli, display
+from herdr_courier import cli, display
 
 NOW = 1_800_000_000.0
 

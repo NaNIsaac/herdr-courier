@@ -1,6 +1,6 @@
 import json
 
-from herdr_console import agents, cli, display
+from herdr_courier import agents, cli, display
 
 
 class FakeWorkspace:
@@ -71,7 +71,7 @@ def test_rows_follow_tab_order_and_join_queue_and_holds():
     assert (shell.agent, shell.kind, shell.status, shell.title) == (None, None, "shell", "pwsh.exe")
 
 
-def test_without_hcd_rows_still_come_back():
+def test_without_daemon_rows_still_come_back():
     rows = agents.collect(FakeWorkspace(), None)
     assert all(r.queued == 0 and r.hold is None for r in rows)
 
@@ -88,9 +88,11 @@ def test_warnings_name_the_tab_that_hides_its_agent():
 
 def test_render_fits_a_phone_width():
     rows = agents.collect(FakeWorkspace(), DISPATCH)
-    text = agents.render(rows, agents.warnings(rows), width=62, hcd="running, 2 queued, 1 held")
+    text = agents.render(
+        rows, agents.warnings(rows), width=62, courierd="running, 2 queued, 1 held"
+    )
     lines = text.splitlines()
-    assert lines[0] == "hcd: running, 2 queued, 1 held"
+    assert lines[0] == "courierd: running, 2 queued, 1 held"
     table = lines[1:5]
     assert all(display.cols(line) <= 62 for line in lines)
     assert table[2].startswith("* w1:p4E")
@@ -103,24 +105,24 @@ def test_render_truncates_long_labels_instead_of_overflowing():
     ws = FakeWorkspace()
     ws.tabs[0]["label"] = "a tab label that is far too long for a phone"
     rows = agents.collect(ws, None)
-    text = agents.render(rows, [], width=40, hcd="not running")
+    text = agents.render(rows, [], width=40, courierd="not running")
     assert all(len(line) <= 40 for line in text.splitlines()[1:4])
     assert "…" in text
 
 
 def test_wide_adds_the_title_column():
     rows = agents.collect(FakeWorkspace(), None)
-    text = agents.render(rows, [], width=100, hcd="not running", wide=True)
+    text = agents.render(rows, [], width=100, courierd="not running", wide=True)
     assert "herdr ops" in text
     assert all(len(line) <= 100 for line in text.splitlines())
 
 
-def test_cli_agents_json_without_hcd(monkeypatch, tmp_path, capsys):
-    monkeypatch.setenv("HC_STATE_DIR", str(tmp_path))
+def test_cli_agents_json_without_daemon(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("COURIER_STATE_DIR", str(tmp_path))
     monkeypatch.setattr(cli, "CliHerdr", FakeWorkspace)
     assert cli.main(["agents", "--json"]) == 0
     reply = json.loads(capsys.readouterr().out)
-    assert reply["hcd"].startswith("not running")
+    assert reply["courierd"].startswith("not running")
     assert [r["pane_id"] for r in reply["rows"]] == ["w1:p1S", "w1:p4E", "w1:p4H"]
     assert reply["warnings"] == [
         "tab '비서' holds agent 'secretary': rename the tab (herdr tab rename w1:t24 secretary) so the phone header names the agent"
@@ -128,7 +130,7 @@ def test_cli_agents_json_without_hcd(monkeypatch, tmp_path, capsys):
 
 
 def test_cli_agents_reports_when_herdr_is_down(monkeypatch, tmp_path, capsys):
-    from herdr_console.core.transport import HerdrError
+    from herdr_courier.core.transport import HerdrError
 
     class Down:
         def agent_list(self):
@@ -136,7 +138,7 @@ def test_cli_agents_reports_when_herdr_is_down(monkeypatch, tmp_path, capsys):
 
         tab_list = pane_list = agent_list
 
-    monkeypatch.setenv("HC_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("COURIER_STATE_DIR", str(tmp_path))
     monkeypatch.setattr(cli, "CliHerdr", Down)
     assert cli.main(["agents"]) == cli.EXIT_FAILED
     assert "herdr did not answer" in capsys.readouterr().err
@@ -146,7 +148,7 @@ def test_korean_labels_keep_columns_aligned():
     ws = FakeWorkspace()
     ws.tabs[0]["label"] = "boss 조율 + 현황판"
     rows = agents.collect(ws, None)
-    lines = agents.render(rows, [], width=62, hcd="not running").splitlines()[1:5]
+    lines = agents.render(rows, [], width=62, courierd="not running").splitlines()[1:5]
     status_col = lines[0].index("status")
     assert all(display.cols(line[: line.index(" " * 1, status_col - 1)]) <= 62 for line in lines)
     assert all(display.cols(line) <= 62 for line in lines)

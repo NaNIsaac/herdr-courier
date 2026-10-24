@@ -1,10 +1,10 @@
-"""hc panes: the workspace laid out by tab, with each pane's label checked against the roster.
+"""courier panes: the workspace laid out by tab, with each pane's label checked against a rule.
 
 Pane labels show in Ovis rows and desktop borders and are cut from the right on a phone, so the
-team names them ``<prefix> · <name>`` (BACKLOG, team roster): ``core``, ``isaac`` and ``lane``
-panes carry their tab's call sign as the name, ``infra`` panes the process they run, and a worker
-a lane starts is ``<tab> › <task>``. ``hc agents`` covers agent names against tab labels; this
-covers the pane labels and where each pane is working.
+default rule (``defaults``, overridden by ``[panes]`` in config.toml) is ``<prefix> · <name>``:
+panes under a ``named_after_tab`` prefix carry their tab's label as the name, ``named_freely``
+prefixes any name, and a worker another pane starts is ``<tab> › <task>``. ``courier agents``
+covers agent names against tab labels; this covers the pane labels and where each pane is working.
 """
 
 import os
@@ -15,11 +15,9 @@ from typing import Any
 
 from . import display
 from .agents import Workspace
+from .config import Panes
 
-DOT = " · "
-SUB = " › "
-NAMED_AFTER_TAB = frozenset({"core", "isaac", "lane"})
-PREFIXES = NAMED_AFTER_TAB | {"infra"}
+DEFAULT_RULE = Panes()
 NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 
 
@@ -71,41 +69,51 @@ def collect(herdr: Workspace) -> list[Tab]:
     return sorted(out, key=lambda t: (t.number, t.tab_id))
 
 
-def label_problem(pane: Pane, tab: str) -> str | None:
-    """Why ``pane``'s label breaks the roster's naming rule, or None when it follows it."""
-    suggestion = f'herdr pane rename {pane.pane_id} "lane{DOT}{tab}"'
+def label_problem(pane: Pane, tab: str, rule: Panes = DEFAULT_RULE) -> str | None:
+    """Why ``pane``'s label breaks the naming rule, or None when it follows it.
+
+    A rule with no prefixes checks nothing.
+    """
+    prefixes = (*rule.named_after_tab, *rule.named_freely)
+    if not prefixes:
+        return None
+    dot, sub = rule.separator, rule.worker_separator
+    suggestion = f'herdr pane rename {pane.pane_id} "{prefixes[0]}{dot}{tab}"'
     if not pane.label:
         return f"{pane.pane_id} in tab {tab!r} has no label: {suggestion}"
-    if SUB in pane.label:
-        owner, _, task = pane.label.partition(SUB)
+    if sub in pane.label:
+        owner, _, task = pane.label.partition(sub)
         if owner != tab:
             return f"{pane.pane_id} {pane.label!r} names tab {owner!r} but sits in {tab!r}"
         if not task.strip():
-            return f"{pane.pane_id} {pane.label!r} has no task after the {SUB.strip()}"
+            return f"{pane.pane_id} {pane.label!r} has no task after the {sub.strip()}"
         return None
-    prefix, dot, name = pane.label.partition(DOT)
-    if not dot or prefix not in PREFIXES:
+    prefix, found, name = pane.label.partition(dot)
+    if not found or prefix not in prefixes:
+        allowed = (
+            ", ".join(prefixes[:-1]) + " or " + prefixes[-1] if len(prefixes) > 1 else prefixes[0]
+        )
         return (
-            f"{pane.pane_id} {pane.label!r} does not start with core, isaac, lane or infra "
-            f"and {DOT.strip()}: {suggestion}"
+            f"{pane.pane_id} {pane.label!r} does not start with {allowed} "
+            f"and {dot.strip()}: {suggestion}"
         )
     if not NAME.fullmatch(name):
         return f"{pane.pane_id} {pane.label!r}: names are lowercase letters, digits and hyphens"
-    if prefix in NAMED_AFTER_TAB and name != tab:
+    if prefix in rule.named_after_tab and name != tab:
         return (
             f"{pane.pane_id} {pane.label!r} is in tab {tab!r}; {prefix} panes are named after their "
-            f'tab: herdr pane rename {pane.pane_id} "{prefix}{DOT}{tab}"'
+            f'tab: herdr pane rename {pane.pane_id} "{prefix}{dot}{tab}"'
         )
     return None
 
 
-def warnings(tabs: list[Tab]) -> list[str]:
-    return [p for t in tabs for pane in t.panes if (p := label_problem(pane, t.label))]
+def warnings(tabs: list[Tab], rule: Panes = DEFAULT_RULE) -> list[str]:
+    return [p for t in tabs for pane in t.panes if (p := label_problem(pane, t.label, rule))]
 
 
-def short_path(path: str) -> str:
-    """Spell a working directory the way the team writes paths: $DEV, $DATA, ~."""
-    for var in ("DEV", "DATA"):
+def short_path(path: str, variables: tuple[str, ...] = DEFAULT_RULE.path_variables) -> str:
+    """Spell a working directory through the first variable it falls under, else through ~."""
+    for var in variables:
         root = os.environ.get(var, "").rstrip("/\\")
         if root and _under(path, root):
             return f"${var}{path[len(root) :]}"
@@ -122,7 +130,7 @@ def _under(path: str, root: str) -> bool:
     return p == r or (p.startswith(r) and p[len(r)] in "/\\")
 
 
-def render(tabs: list[Tab], notes: list[str], *, width: int) -> str:
+def render(tabs: list[Tab], notes: list[str], *, width: int, rule: Panes = DEFAULT_RULE) -> str:
     width = max(width, 40)
     pane_w = max([6, *(display.cols(p.pane_id) for t in tabs for p in t.panes)])
     label_w = min(
@@ -140,7 +148,7 @@ def render(tabs: list[Tab], notes: list[str], *, width: int) -> str:
                     "*" if pane.focused else " ",
                     display.fit(pane.pane_id, pane_w),
                     display.fit(pane.label or "-", label_w),
-                    display.clip_left(short_path(pane.cwd), cwd_w),
+                    display.clip_left(short_path(pane.cwd, rule.path_variables), cwd_w),
                 ]
             )
             out.append(line.rstrip())

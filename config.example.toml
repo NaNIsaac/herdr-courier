@@ -1,0 +1,27 @@
+# courier settings. Copy to config.toml in the state directory to change any of them:
+#   Windows  %LOCALAPPDATA%\herdr-courier\config.toml
+#   others   $XDG_STATE_HOME/herdr-courier/config.toml (~/.local/state/herdr-courier/config.toml)
+# COURIER_STATE_DIR moves the whole directory. Keys left out keep the values below, which are the
+# built-in defaults. Unknown keys are an error.
+
+[panes]
+# courier panes checks pane labels against "<prefix><separator><name>".
+separator = " · "
+# A worker started from another pane is "<tab><worker_separator><task>".
+worker_separator = " › "
+# Panes under these prefixes are named after their tab. The first one is what a fix suggests for
+# an unlabelled pane.
+named_after_tab = ["lane", "core", "isaac"]
+# Panes under these prefixes may take any name, such as the process they run.
+named_freely = ["infra"]
+# Set both lists to [] to turn the label check off.
+# Working directories under these environment variables are shown as $NAME\...
+path_variables = ["DEV", "DATA"]
+
+[doctor]
+# Endpoint files (JSON with a "pid") of other programs that can write prompts into panes. courier
+# doctor fails while one of those processes is alive, since two writers can interleave. The
+# default is isaac-control-center's in-process dispatcher.
+other_writers = ["~/.isaac-control-center/dispatch/endpoint.json"]
+# Ovis health route; "" skips the check.
+ovis_url = "http://127.0.0.1:7317"

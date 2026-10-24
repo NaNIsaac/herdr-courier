@@ -147,15 +147,12 @@ def test_hold_keeps_dispatcher_out_until_release(dummy, dispatcher):
 
 
 def test_serve_and_send_end_to_end(dummy, tmp_path):
-    # A real courier serve on its own state directory (not the user's), driven by the real courier.
+    # A real hcd (courier serve) on its own state directory (not the user's), driven by the real courier.
     pane, log = dummy
     env = {**os.environ, "COURIER_STATE_DIR": str(tmp_path / "courier-state"), "PYTHONUTF8": "1"}
     server = subprocess.Popen(
         [
-            sys.executable,
-            "-m",
-            "herdr_courier.cli",
-            "serve",
+            str(Path(sys.executable).with_name("hcd.exe")),
             "--transport",
             "pane",
             "--tick",
@@ -187,6 +184,7 @@ def test_serve_and_send_end_to_end(dummy, tmp_path):
         time.sleep(3)
         assert len(submitted(log)) == before
         assert "input typed" in courier("status").stdout
+        assert "ok   dispatcher" in courier("doctor").stdout
 
         herdr("pane", "send-keys", pane, "ctrl+u")
         assert until(lambda: len(submitted(log)) > before, 15)

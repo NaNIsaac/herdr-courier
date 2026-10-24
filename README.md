@@ -41,7 +41,7 @@ courier --help
 ```
 
 This installs `courier`, and `hc` as a short name for the same program (`hc send`, `hc serve`).
-Upgrade with `uv tool upgrade herdr-courier`.
+`hcd` is a third name for `courier serve`. Upgrade with `uv tool upgrade herdr-courier`.
 
 ## First run
 
@@ -60,6 +60,69 @@ courier send boss "[lane] status report"
 
 `courier doctor` should print `all checks pass` on its first line. `boss` stands for an agent
 name or a pane id, the same targets `herdr agent prompt` takes.
+
+## Examples
+
+Start the daemon; `hcd` and `hc serve` are other names for `courier serve`:
+
+```text
+$ hcd
+courier serve pid 13500 on 127.0.0.1:61710, transport agent, state C:\Users\you\AppData\Local\herdr-courier
+```
+
+Report from a lane to the agent `reviewer`:
+
+```text
+$ courier send reviewer "[lane] tests pass, PR opened"
+queued 6f555376a5 for reviewer (w1:p61)
+```
+
+Keep the daemon out of a pane while you type there. A message sent meanwhile waits:
+
+```text
+$ courier hold reviewer --reason "typing on the phone" --ttl 600
+holding w1:p61 for 600 s
+$ courier send reviewer "[lane] tests pass, PR opened"
+queued 6f555376a5 for reviewer (w1:p61)
+$ courier status
+w1:p61  HOLD typing on the phone (lane, 599 s left)
+  observed: idle, empty: dim placeholder 'Try "how does
+    <filepath> work?"'
+  6f555376a5 waiting      0s from lane: hold: typing on the
+      phone
+      [lane] tests pass, PR opened
+$ courier release reviewer
+released w1:p61
+```
+
+Check that everything is alive:
+
+```text
+$ courier doctor
+courier doctor: all checks pass
+ok   herdr      0.9.5; 13 panes, 6 agents
+ok   dispatcher pid 13500, port 61710, api 1
+ok   worker     last pass 0.0 s ago, no errors
+ok   queue      0 queued, 0 held
+ok   journal    empty (nothing queued since courier serve
+                started)
+ok   config     built-in defaults (no config.toml)
+ok   writers    no other dispatcher running
+ok   ovis       ok, revision d5a35b7, sees herdr 0.9.5
+```
+
+List the panes (rows left out here); `courier agents --json` prints the same rows as JSON:
+
+```text
+$ courier agents
+dispatcher: running, 0 queued, 0 held
+  pane   tab               agent             status  queue
+  w1:p1S boss              boss              working -
+  ...
+  w1:p61 reviewer          reviewer          idle    -
+* = focused on the herdr server (any client)
+shell = no agent in that pane
+```
 
 ## Limits
 
@@ -124,7 +187,7 @@ check fails. `status` shows every queue and hold and what the daemon last saw in
 
 | command | does |
 | --- | --- |
-| `courier serve [--port N] [--tick S]` | run the daemon in the foreground (port 0, the default, picks a free one) |
+| `courier serve [--port N] [--tick S]` | run the daemon in the foreground (port 0, the default, picks a free one); also `hc serve` and `hcd` |
 | `courier send TARGET TEXT [--wait] [--until STATUS] [--timeout MS] [--source NAME] [--human]` | queue a message; `--human` puts it ahead of queued agent messages |
 | `courier status [TARGET] [--recent N] [--json] [--width N]` | queues, holds and the last observation per pane |
 | `courier hold TARGET [--ttl SECONDS] [--reason TEXT] [--owner NAME]` | stop the daemon from typing into a pane |

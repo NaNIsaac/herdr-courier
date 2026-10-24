@@ -25,6 +25,8 @@ EXIT_UNAVAILABLE = 3
 EXIT_TIMEOUT = 4
 # Longer than the server's worst case for resolving a target (herdr CLI timeout 15 s).
 SEND_TIMEOUT = 30.0
+SERVE_HELP = "run the dispatcher, the one process that writes into panes"
+SERVE_DESCRIPTION = "Run the dispatcher in the foreground. Start it in a herdr shell pane."
 
 
 def manual_path(target: str, text: str | None) -> str:
@@ -327,11 +329,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("id")
     p.set_defaults(func=cmd_cancel)
 
-    p = sub.add_parser(
-        "serve",
-        help="run the dispatcher, the one process that writes into panes",
-        description="Run the dispatcher in the foreground. Start it in a herdr shell pane.",
-    )
+    p = sub.add_parser("serve", help=SERVE_HELP, description=SERVE_DESCRIPTION)
     daemon.add_arguments(p)
     p.set_defaults(func=daemon.serve)
 
@@ -339,6 +337,13 @@ def main(argv: list[str] | None = None) -> int:
     if isinstance(sys.stdout, io.TextIOWrapper):
         sys.stdout.reconfigure(errors="replace")
     return args.func(args)
+
+
+def serve_main(argv: list[str] | None = None) -> int:
+    """Entry point of ``hcd``, the same dispatcher as ``courier serve``."""
+    parser = argparse.ArgumentParser(prog="hcd", description=SERVE_DESCRIPTION)
+    daemon.add_arguments(parser)
+    return daemon.serve(parser.parse_args(argv))
 
 
 if __name__ == "__main__":

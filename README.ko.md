@@ -40,7 +40,7 @@ courier --help
 ```
 
 `courier`와, 같은 프로그램의 짧은 이름 `hc`가 설치됩니다(`hc send`, `hc serve`).
-업그레이드는 `uv tool upgrade herdr-courier`입니다.
+`hcd`는 `courier serve`의 세 번째 이름입니다. 업그레이드는 `uv tool upgrade herdr-courier`입니다.
 
 ## 처음 실행
 
@@ -59,6 +59,69 @@ courier send boss "[lane] status report"
 
 `courier doctor`의 첫 줄에 `all checks pass`가 나와야 합니다. `boss` 자리에는 에이전트 이름이나
 pane id를 씁니다. `herdr agent prompt`가 받는 대상과 같습니다.
+
+## 예시
+
+데몬을 띄웁니다. `hcd`와 `hc serve`는 `courier serve`의 다른 이름입니다.
+
+```text
+$ hcd
+courier serve pid 13500 on 127.0.0.1:61710, transport agent, state C:\Users\you\AppData\Local\herdr-courier
+```
+
+레인에서 에이전트 `reviewer`에게 보고합니다.
+
+```text
+$ courier send reviewer "[lane] tests pass, PR opened"
+queued 6f555376a5 for reviewer (w1:p61)
+```
+
+내가 그 pane에 입력하는 동안 데몬이 들어오지 못하게 막습니다. 그사이 보낸 메시지는 기다립니다.
+
+```text
+$ courier hold reviewer --reason "typing on the phone" --ttl 600
+holding w1:p61 for 600 s
+$ courier send reviewer "[lane] tests pass, PR opened"
+queued 6f555376a5 for reviewer (w1:p61)
+$ courier status
+w1:p61  HOLD typing on the phone (lane, 599 s left)
+  observed: idle, empty: dim placeholder 'Try "how does
+    <filepath> work?"'
+  6f555376a5 waiting      0s from lane: hold: typing on the
+      phone
+      [lane] tests pass, PR opened
+$ courier release reviewer
+released w1:p61
+```
+
+전체가 살아 있는지 확인합니다.
+
+```text
+$ courier doctor
+courier doctor: all checks pass
+ok   herdr      0.9.5; 13 panes, 6 agents
+ok   dispatcher pid 13500, port 61710, api 1
+ok   worker     last pass 0.0 s ago, no errors
+ok   queue      0 queued, 0 held
+ok   journal    empty (nothing queued since courier serve
+                started)
+ok   config     built-in defaults (no config.toml)
+ok   writers    no other dispatcher running
+ok   ovis       ok, revision d5a35b7, sees herdr 0.9.5
+```
+
+pane 목록입니다(일부 행은 생략). `courier agents --json`은 같은 행을 JSON으로 출력합니다.
+
+```text
+$ courier agents
+dispatcher: running, 0 queued, 0 held
+  pane   tab               agent             status  queue
+  w1:p1S boss              boss              working -
+  ...
+  w1:p61 reviewer          reviewer          idle    -
+* = focused on the herdr server (any client)
+shell = no agent in that pane
+```
 
 ## 제약
 
@@ -122,7 +185,7 @@ hold, 지난 한 시간의 실패, journal, 설정 파일, pane에 입력하는 
 
 | 명령 | 하는 일 |
 | --- | --- |
-| `courier serve [--port N] [--tick S]` | 데몬을 포그라운드로 실행 (port 기본값 0은 빈 포트를 고름) |
+| `courier serve [--port N] [--tick S]` | 데몬을 포그라운드로 실행 (port 기본값 0은 빈 포트를 고름); `hc serve`, `hcd`도 같음 |
 | `courier send TARGET TEXT [--wait] [--until STATUS] [--timeout MS] [--source NAME] [--human]` | 메시지를 큐에 넣음. `--human`은 큐의 에이전트 메시지보다 앞에 넣음 |
 | `courier status [TARGET] [--recent N] [--json] [--width N]` | pane별 큐, hold, 마지막 관찰 |
 | `courier hold TARGET [--ttl SECONDS] [--reason TEXT] [--owner NAME]` | 데몬이 그 pane에 입력하지 못하게 함 |

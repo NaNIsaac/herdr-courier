@@ -112,7 +112,7 @@ def test_render_fits_a_phone_and_keeps_path_tails():
     assert max(display.cols(line) for line in lines) <= 62
     assert lines[0] == "tab boss  w1:t8  2 panes"
     deep = next(line for line in lines if "w1:p3H" in line)
-    assert deep.endswith(display.ELLIPSIS + "notebooks") or deep.endswith("\\notebooks")
+    assert deep.endswith((display.ELLIPSIS + "notebooks", "\\notebooks"))
     assert any(line.startswith("* w1:p4W") for line in lines)
     assert any(line.startswith("! w1:p50 in tab 'boss' has no label") for line in lines)
 

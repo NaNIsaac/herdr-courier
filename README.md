@@ -2,7 +2,17 @@
 
 A planned terminal-first **human console and prompt dispatcher** for [herdr](https://github.com/search?q=herdr&type=repositories) workspaces. Its primary purpose is to keep human typing separate from agent-generated prompts and make terminal/SSH operation possible without a browser.
 
-> **Status:** Initial project outline only. No CLI or dispatcher implementation is present in this repository yet.
+> **Status:** the dispatcher core is here (`herdr_console.core`: input-box classification, send conditions, per-pane queue with journal and holds, the pane writer), moved unchanged from Isaac Control Center where it was reviewed. The `hcd` daemon and the `hc` CLI come next; nothing here sends prompts on its own yet.
+
+## Development
+
+<!-- test -->
+```sh
+uv sync
+uv run pytest -q
+```
+
+The core uses only the standard library and the `herdr` CLI.
 
 ## Responsibilities
 

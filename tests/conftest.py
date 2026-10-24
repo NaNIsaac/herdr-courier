@@ -115,7 +115,7 @@ def make_dispatcher(herdr, clock, tmp_path):
 
 @pytest.fixture
 def run(clock):
-    """Advance the fake clock in half-second ticks, like courierd's worker."""
+    """Advance the fake clock in half-second ticks, like the dispatcher's worker."""
 
     def advance(dispatcher: Dispatcher, seconds: float) -> None:
         end = clock.now + seconds

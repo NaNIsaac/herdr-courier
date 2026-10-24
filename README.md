@@ -11,9 +11,9 @@ Unofficial; not affiliated with herdr.
 When agents in a herdr workspace message each other with `herdr agent prompt`, the text is pasted
 after whatever is already in the target's input box and submitted. If you were halfway through a
 sentence in that pane, your half sentence goes out glued to the agent's message. courier puts a
-small daemon, `courierd`, in between: agents and scripts call `courier send`, and `courierd` types
-the message only after the target's input box has been empty for a moment. Each pane has its own
-queue, so messages arrive in order and one at a time.
+small daemon, `courier serve`, in between: agents and scripts call `courier send`, and the daemon
+types the message only after the target's input box has been empty for a moment. Each pane has
+its own queue, so messages arrive in order and one at a time.
 
 ```text
 $ courier send boss "build finished, 3 tests failing" --wait
@@ -40,7 +40,7 @@ Open a new terminal and check the install:
 courier --help
 ```
 
-This installs `courier` and `courierd`, and `hc` and `hcd` as short names for the same programs.
+This installs `courier`, and `hc` as a short name for the same program (`hc send`, `hc serve`).
 Upgrade with `uv tool upgrade herdr-courier`.
 
 ## First run
@@ -48,7 +48,7 @@ Upgrade with `uv tool upgrade herdr-courier`.
 Start the daemon in a herdr shell pane, so it outlives agent sessions:
 
 ```sh
-courierd
+courier serve
 ```
 
 Then, from any other pane on the same machine:
@@ -70,7 +70,7 @@ name or a pane id, the same targets `herdr agent prompt` takes.
   until you cancel it.
 - Only messages sent through `courier send` are queued. A program that calls
   `herdr agent prompt` directly can still type over you.
-- One `courierd` per state directory, on one machine. It listens on 127.0.0.1 only.
+- One `courier serve` per state directory, on one machine. It listens on 127.0.0.1 only.
 
 ## Use it
 
@@ -124,7 +124,7 @@ check fails. `status` shows every queue and hold and what the daemon last saw in
 
 | command | does |
 | --- | --- |
-| `courierd [--port N] [--tick S]` | run the daemon (port 0, the default, picks a free one) |
+| `courier serve [--port N] [--tick S]` | run the daemon in the foreground (port 0, the default, picks a free one) |
 | `courier send TARGET TEXT [--wait] [--until STATUS] [--timeout MS] [--source NAME] [--human]` | queue a message; `--human` puts it ahead of queued agent messages |
 | `courier status [TARGET] [--recent N] [--json] [--width N]` | queues, holds and the last observation per pane |
 | `courier hold TARGET [--ttl SECONDS] [--reason TEXT] [--owner NAME]` | stop the daemon from typing into a pane |

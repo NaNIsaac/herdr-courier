@@ -4,7 +4,7 @@ herdr's mobile layout (terminal width at or below ``ui.mobile_width_threshold``,
 draws the workspace label, ``tab <label> · n/m`` and status counts in its header. Pane names, agent
 names and pane borders are not drawn there (herdr 0.9.5, ``src/client/shell/mobile.rs``). On a
 phone the tab label is the only identity on screen, so a tab has to be named after the agent it
-holds; this table joins tabs, panes, agents and courierd's queue so the mismatches show.
+holds; this table joins tabs, panes, agents and courier serve's queue so the mismatches show.
 """
 
 from dataclasses import asdict, dataclass
@@ -40,7 +40,7 @@ class Row:
 
 
 def collect(herdr: Workspace, dispatch: dict[str, Any] | None) -> list[Row]:
-    """One row per pane, in tab order; courierd's queue and holds are joined in when it answered."""
+    """One row per pane, in tab order; courier serve's queue and holds are joined in when it answered."""
     tabs = {t["tab_id"]: t for t in herdr.tab_list()}
     agents = {a["pane_id"]: a for a in herdr.agent_list()}
     queues = (dispatch or {}).get("panes") or {}
@@ -103,7 +103,7 @@ def render(
     notes: list[str],
     *,
     width: int,
-    courierd: str,
+    dispatcher: str,
     wide: bool = False,
 ) -> str:
     """A table that fits a phone terminal; ``wide`` adds the terminal title column."""
@@ -134,7 +134,7 @@ def render(
         return text.rstrip()
 
     out = [
-        *wrap(f"courierd: {courierd}", width, "", "  "),
+        *wrap(f"dispatcher: {dispatcher}", width, "", "  "),
         line(" ", "pane", "tab", "agent", "status", "queue", "title"),
     ]
     for row in rows:

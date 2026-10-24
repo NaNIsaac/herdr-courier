@@ -1,4 +1,4 @@
-"""courier: queue prompts through courierd instead of writing into panes directly.
+"""courier: queue prompts through courier serve instead of writing into panes directly.
 
 ``courier send`` takes the same arguments as ``herdr agent prompt``. Without ``--wait`` it returns
 once the message is queued; with ``--wait`` it waits for delivery and then, like
@@ -16,7 +16,7 @@ import urllib.parse
 import uuid
 from typing import Any, NoReturn
 
-from . import agents, config, display, doctor, panes
+from . import agents, config, daemon, display, doctor, panes
 from .client import LostContact, Refused, Unavailable, request
 from .core.transport import CliHerdr, HerdrError
 
@@ -30,7 +30,7 @@ SEND_TIMEOUT = 30.0
 def manual_path(target: str, text: str | None) -> str:
     shown = "<text>" if text is None else json.dumps(text, ensure_ascii=False)
     return (
-        "Nothing was sent. Start courierd in a herdr shell pane, or deliver by hand:\n"
+        "Nothing was sent. Start courier serve in a herdr shell pane, or deliver by hand:\n"
         f"  herdr agent read {target} --source recent --lines 12 --format ansi\n"
         "  # in the last input box, the text after the prompt glyph must be empty or dim\n"
         f"  herdr agent prompt {target} {shown}"
@@ -200,15 +200,15 @@ def cmd_agents(args: argparse.Namespace) -> int:
     try:
         reply = request("GET", "status")
     except Unavailable as exc:
-        dispatch, courierd = None, f"not running ({exc}); courier send would fail with status 3"
+        dispatch, summary = None, f"not running ({exc}); courier send would fail with status 3"
     except (LostContact, Refused) as exc:
-        dispatch, courierd = None, f"error ({exc})"
+        dispatch, summary = None, f"error ({exc})"
     else:
         dispatch = reply["status"]
         worker = reply.get("worker") or {}
         queued = sum(len(p["pending"]) for p in dispatch["panes"].values())
         held = sum(1 for p in dispatch["panes"].values() if p["hold"])
-        courierd = (
+        summary = (
             f"running, {queued} queued, {held} held"
             if worker.get("alive")
             else "answers but its worker is not running; nothing is being sent"
@@ -222,14 +222,14 @@ def cmd_agents(args: argparse.Namespace) -> int:
     if args.json:
         print(
             json.dumps(
-                {"courierd": courierd, "rows": [r.as_dict() for r in rows], "warnings": notes},
+                {"dispatcher": summary, "rows": [r.as_dict() for r in rows], "warnings": notes},
                 ensure_ascii=False,
                 indent=2,
             )
         )
         return 0
     width = args.width or display.terminal_width()
-    print(agents.render(rows, notes, width=width, courierd=courierd, wide=args.wide))
+    print(agents.render(rows, notes, width=width, dispatcher=summary, wide=args.wide))
     return 0
 
 
@@ -270,7 +270,7 @@ def cmd_cancel(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="courier", description="Queue prompts for herdr panes through courierd."
+        prog="courier", description="Queue prompts for herdr panes through courier serve."
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -303,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_release)
 
     p = sub.add_parser(
-        "agents", help="every pane with its tab, agent name, status and courierd queue"
+        "agents", help="every pane with its tab, agent name, status and dispatcher queue"
     )
     p.add_argument("--json", action="store_true")
     p.add_argument("--width", type=int, help="table width (default: the terminal, 62 if unknown)")
@@ -311,7 +311,8 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_agents)
 
     p = sub.add_parser(
-        "doctor", help="check herdr, courierd, its journal and config, other pane writers and Ovis"
+        "doctor",
+        help="check herdr, courier serve, its journal and config, other pane writers and Ovis",
     )
     p.add_argument("--json", action="store_true")
     p.add_argument("--width", type=int, help="line width (default: the terminal, 62 if unknown)")
@@ -325,6 +326,14 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("cancel", help="drop a queued message")
     p.add_argument("id")
     p.set_defaults(func=cmd_cancel)
+
+    p = sub.add_parser(
+        "serve",
+        help="run the dispatcher, the one process that writes into panes",
+        description="Run the dispatcher in the foreground. Start it in a herdr shell pane.",
+    )
+    daemon.add_arguments(p)
+    p.set_defaults(func=daemon.serve)
 
     args = parser.parse_args(argv)
     if isinstance(sys.stdout, io.TextIOWrapper):

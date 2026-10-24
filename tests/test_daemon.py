@@ -3,6 +3,8 @@ import json
 import os
 import threading
 import time
+import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -14,7 +16,7 @@ from herdr_courier.state import endpoint_path, lock_path
 
 @pytest.fixture
 def start(tmp_path, monkeypatch):
-    """Start courierd on a free port with a fake herdr; courier finds it through COURIER_STATE_DIR."""
+    """Start the dispatcher on a free port with a fake herdr; courier finds it through COURIER_STATE_DIR."""
     monkeypatch.setenv("COURIER_STATE_DIR", str(tmp_path))
     monkeypatch.setattr("herdr_courier.core.gate.DEBOUNCE", 0.1)
     running = []
@@ -150,7 +152,7 @@ def test_second_instance_is_refused(tmp_path, monkeypatch):
     with pytest.raises(AlreadyRunning):
         InstanceLock(lock_path(tmp_path))
     monkeypatch.setenv("COURIER_STATE_DIR", str(tmp_path))
-    assert daemon.main(["--port", "0"]) == 1
+    assert cli.main(["serve", "--port", "0"]) == 1
     first.release()
     InstanceLock(lock_path(tmp_path)).release()
 
@@ -199,7 +201,7 @@ def test_endpoint_file_is_written_over_a_stale_temp_file(tmp_path, herdr):
         service.stop()
 
 
-def test_send_wait_through_live_courierd(herdr, start, capsys, monkeypatch):
+def test_send_wait_through_live_dispatcher(herdr, start, capsys, monkeypatch):
     pane = herdr.add("w1:p1", "boss")
     start(herdr)
     monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: type("R", (), {"returncode": 0}))
@@ -256,7 +258,7 @@ def test_hc_without_daemon_fails_loudly_with_manual_path(tmp_path, monkeypatch, 
     assert exc.value.code == cli.EXIT_UNAVAILABLE
     err = capsys.readouterr().err
     assert "Nothing was sent" in err
-    assert "Start courierd" in err
+    assert "Start courier serve" in err
     assert 'herdr agent prompt boss "[lane] report"' in err
 
 
@@ -397,3 +399,18 @@ def test_endpoint_pointing_at_another_server_counts_as_unavailable(tmp_path, mon
     finally:
         thread.join(timeout=5)
         other.server_close()
+
+
+def test_serve_is_a_subcommand_of_courier_and_hc(capsys):
+    # One program: hc is the same entry point, and no separate daemon executable is installed.
+    project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text("utf-8"))
+    assert project["project"]["scripts"] == {
+        "courier": "herdr_courier.cli:main",
+        "hc": "herdr_courier.cli:main",
+    }
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["serve", "--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert out.startswith("usage: courier serve")
+    assert "--port" in out and "--transport" in out

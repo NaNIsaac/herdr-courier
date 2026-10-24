@@ -19,12 +19,12 @@ src/herdr_courier/
   core/gate.py        the send conditions as a pure function of one observation
   core/queue.py       Dispatcher: per-pane FIFO, holds, delivery state machine, JSONL journal
   core/transport.py   the only code that writes into panes (agent prompt; send-text for tests)
-  daemon.py           courierd: instance lock, endpoint file, worker thread, /api/dispatch/*
+  daemon.py           courier serve: instance lock, endpoint file, worker thread, /api/dispatch/*
   client.py           standard-library client for those routes (courier and other programs)
   cli.py              courier
   agents.py           courier agents: panes joined with tabs, agent names and the queue
   panes.py            courier panes: panes by tab, labels checked against a naming rule
-  doctor.py           courier doctor: read-only checks of herdr, courierd and its neighbours
+  doctor.py           courier doctor: read-only checks of herdr, courier serve and its neighbours
   defaults.py         built-in settings; config.toml in the state directory overrides them
   config.py           reads and validates config.toml
   state.py            state directory: journal, lock, endpoint file, config
@@ -35,28 +35,29 @@ that need the queue use `client.py` rather than writing into panes themselves.
 
 ## Process model
 
-`courierd` is the one long-running process that writes to panes. Start it in a herdr shell pane so
-it outlives agent sessions. One worker thread calls `Dispatcher.tick()` every 0.5 s; it is the only
-writer to any pane, which is what makes each per-pane queue a lock. Request threads only enqueue,
-hold, release, cancel, wait and read status.
+`courier serve` is the one long-running process that writes to panes. Start it in a herdr shell
+pane so it outlives agent sessions. One worker thread calls `Dispatcher.tick()` every 0.5 s; it is
+the only writer to any pane, which is what makes each per-pane queue a lock. Request threads only
+enqueue, hold, release, cancel, wait and read status.
 
 The state directory is `%LOCALAPPDATA%\herdr-courier` on Windows and
 `$XDG_STATE_HOME/herdr-courier` (default `~/.local/state/herdr-courier`) elsewhere;
 `COURIER_STATE_DIR` overrides it. A 0.1 directory (`herdr-console`) is moved to the new name on
-the first start when the new one does not exist yet. Before it reads the journal, `courierd`
-takes an OS file lock on `<state dir>/lock`, so a second `courierd` exits with a message; the OS
-releases the lock when the process dies.
+the first start when the new one does not exist yet. Before it reads the journal, `courier serve`
+takes an OS file lock on `<state dir>/lock`, so a second `courier serve` exits with a message; the
+OS releases the lock when the process dies.
 
-On startup `courierd` writes `<state dir>/endpoint.json` with its port (any free port unless
+On startup `courier serve` writes `<state dir>/endpoint.json` with its port (any free port unless
 `--port` is given), a fresh random token and its pid, and removes it on clean shutdown if it still
 holds its own token. On POSIX the file is created with mode 0600; on Windows it inherits the ACL
 of the user's profile directory, so SYSTEM and local administrators can read the token too.
 Anyone who can read it can queue prompts. `courier` reads that file and calls
-`http://127.0.0.1:<port>/api/dispatch/...` with `Authorization: Bearer <token>`. courierd listens
-on 127.0.0.1 only, refuses a `Host` other than localhost (so a web page that points its own name
-at 127.0.0.1 cannot reach it), requires the token on every route, and sends no CORS headers.
+`http://127.0.0.1:<port>/api/dispatch/...` with `Authorization: Bearer <token>`. The server
+listens on 127.0.0.1 only, refuses a `Host` other than localhost (so a web page that points its
+own name at 127.0.0.1 cannot reach it), requires the token on every route, and sends no CORS
+headers.
 
-If `courierd` is not running, `courier send` exits with status 3, says nothing was sent, and
+If `courier serve` is not running, `courier send` exits with status 3, says nothing was sent, and
 prints the manual path (read the target's input box, then `herdr agent prompt`). It never falls
 back to writing into the pane itself.
 
@@ -94,7 +95,7 @@ once with the same id and gets the first item back instead of queuing the messag
 ## Run
 
 ```powershell
-courierd                # in a herdr shell pane, so it outlives agent sessions
+courier serve           # in a herdr shell pane, so it outlives agent sessions
 courier send boss "[lane] report"
 courier status
 ```

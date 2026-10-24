@@ -14,7 +14,7 @@ class FakeWorkspace:
             {"tab_id": "w1:t19", "label": "xrr-policy", "number": 41},
         ]
         self.panes = [
-            {"pane_id": "w1:p4Z", "tab_id": "w1:t2M", "label": "infra · courierd", "cwd": "C:\\"},
+            {"pane_id": "w1:p4Z", "tab_id": "w1:t2M", "label": "infra · courier", "cwd": "C:\\"},
             {
                 "pane_id": "w1:p4W",
                 "tab_id": "w1:t2M",

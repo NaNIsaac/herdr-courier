@@ -1,9 +1,9 @@
-"""courier doctor: what is wrong with herdr, courierd and the tools around them, read only.
+"""courier doctor: what is wrong with herdr, courier serve and the tools around them, read only.
 
-Every check only reads: herdr's CLI, courierd's endpoint file, status route and journal,
+Every check only reads: herdr's CLI, courier serve's endpoint file, status route and journal,
 config.toml, the endpoint files of other programs that write prompts into panes
 (``doctor.other_writers``), and Ovis's unauthenticated health route (``doctor.ovis_url``). No
-lock is taken, so a doctor run cannot stop a courierd that is starting at the same moment.
+lock is taken, so a doctor run cannot stop a courier serve that is starting at the same moment.
 """
 
 import json
@@ -27,7 +27,7 @@ STALE_TICK = 10.0
 PENDING_TOO_LONG = 600.0
 RECENT_FAILURE = 3600.0
 JOURNAL_TOO_BIG = 10 * 1024 * 1024
-START_DAEMON = "start courierd in a herdr shell pane (README, Run)"
+START_DAEMON = "start courier serve in a herdr shell pane (README, Run)"
 
 
 class Level(StrEnum):
@@ -155,7 +155,9 @@ def check_daemon(probes: Probes, root: Path, now: float) -> list[Check]:
     endpoint = _endpoint(endpoint_path(root))
     if endpoint is None:
         return [
-            Check("courierd", Level.FAIL, f"not running (no endpoint file in {root})", START_DAEMON)
+            Check(
+                "dispatcher", Level.FAIL, f"not running (no endpoint file in {root})", START_DAEMON
+            )
         ]
     pid = int(endpoint.get("pid") or 0)
     alive = probes.pid_alive(pid)
@@ -165,7 +167,7 @@ def check_daemon(probes: Probes, root: Path, now: float) -> list[Check]:
         if not alive:
             return [
                 Check(
-                    "courierd",
+                    "dispatcher",
                     Level.FAIL,
                     f"not running (pid {pid} has exited; stale endpoint file)",
                     START_DAEMON,
@@ -173,14 +175,14 @@ def check_daemon(probes: Probes, root: Path, now: float) -> list[Check]:
             ]
         return [
             Check(
-                "courierd",
+                "dispatcher",
                 Level.FAIL,
                 f"pid {pid} is alive but does not answer: {exc}",
-                "read the courierd pane; if it is stuck, stop it with Ctrl-C and start it again",
+                "read the courier serve pane; if it is stuck, stop it with Ctrl-C and start it again",
             )
         ]
     checks = [
-        Check("courierd", Level.OK, f"pid {pid}, port {endpoint.get('port')}, api {reply['api']}")
+        Check("dispatcher", Level.OK, f"pid {pid}, port {endpoint.get('port')}, api {reply['api']}")
     ]
     worker = reply.get("worker") or {}
     tick = worker.get("seconds_since_tick")
@@ -190,7 +192,7 @@ def check_daemon(probes: Probes, root: Path, now: float) -> list[Check]:
                 "worker",
                 Level.FAIL,
                 f"not dispatching (alive={worker.get('alive')}, last pass {tick} s ago)",
-                "restart courierd; queued items are kept in its journal",
+                "restart courier serve; queued items are kept in its journal",
             )
         )
     elif worker.get("errors"):
@@ -239,7 +241,7 @@ def check_queue(status: dict[str, Any], now: float) -> Check:
 def check_journal(root: Path) -> Check:
     path = journal_path(root)
     if not path.exists():
-        return Check("journal", Level.OK, "empty (nothing queued since courierd started)")
+        return Check("journal", Level.OK, "empty (nothing queued since courier serve started)")
     size = path.stat().st_size
     with path.open(encoding="utf-8", errors="replace") as f:
         lines = f.read().splitlines()
@@ -258,7 +260,7 @@ def check_journal(root: Path) -> Check:
             f"inspect {path}",
         )
     if size > JOURNAL_TOO_BIG:
-        return Check("journal", Level.WARN, f"{detail}; compacted only when courierd restarts")
+        return Check("journal", Level.WARN, f"{detail}; compacted only when courier serve restarts")
     return Check("journal", Level.OK, detail)
 
 
@@ -298,7 +300,7 @@ def check_other_writers(probes: Probes, paths: tuple[str, ...]) -> Check:
             "writers",
             Level.FAIL,
             f"another dispatcher is running: {', '.join(live)}; two pane writers",
-            "stop it, or make it send through courierd",
+            "stop it, or make it send through courier serve",
         )
     detail = "no other dispatcher running"
     return Check("writers", Level.OK, f"{detail} ({stale} stale endpoint)" if stale else detail)
@@ -310,7 +312,7 @@ def check_ovis(probes: Probes, url: str, herdr_version: str | None) -> Check:
     except (OSError, ValueError) as exc:
         reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
         return Check(
-            "ovis", Level.WARN, f"no answer from {url} ({reason}); courierd does not need it"
+            "ovis", Level.WARN, f"no answer from {url} ({reason}); courier serve does not need it"
         )
     if not health.get("ok"):
         return Check("ovis", Level.WARN, f"health is not ok: {health}")

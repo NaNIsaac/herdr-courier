@@ -30,9 +30,7 @@ Issues = "https://github.com/NaNIsaac/herdr-courier/issues"
 
 [project.scripts]
 courier = "herdr_courier.cli:main"
-courierd = "herdr_courier.daemon:main"
 hc = "herdr_courier.cli:main"
-hcd = "herdr_courier.daemon:main"
 
 [build-system]
 requires = ["uv_build>=0.11,<0.13"]

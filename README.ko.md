@@ -10,8 +10,8 @@
 
 herdr 워크스페이스의 에이전트끼리 `herdr agent prompt`로 메시지를 보내면, 그 글은 대상 입력
 상자에 이미 있는 내용 뒤에 붙어서 제출됩니다. 그 pane에서 문장을 반쯤 쓰고 있었다면 쓰던 문장이
-에이전트 메시지와 붙은 채 나갑니다. courier는 그 사이에 작은 데몬 `courierd`를 둡니다. 에이전트와
-스크립트는 `courier send`를 부르고, `courierd`는 대상 입력 상자가 잠시 비어 있을 때만 메시지를
+에이전트 메시지와 붙은 채 나갑니다. courier는 그 사이에 작은 데몬 `courier serve`를 둡니다. 에이전트와
+스크립트는 `courier send`를 부르고, 데몬은 대상 입력 상자가 잠시 비어 있을 때만 메시지를
 입력합니다. pane마다 큐가 따로 있어서 메시지는 순서대로 하나씩 들어갑니다.
 
 ```text
@@ -39,7 +39,7 @@ uv tool update-shell
 courier --help
 ```
 
-`courier`와 `courierd`, 그리고 같은 프로그램의 짧은 이름 `hc`와 `hcd`가 설치됩니다.
+`courier`와, 같은 프로그램의 짧은 이름 `hc`가 설치됩니다(`hc send`, `hc serve`).
 업그레이드는 `uv tool upgrade herdr-courier`입니다.
 
 ## 처음 실행
@@ -47,7 +47,7 @@ courier --help
 데몬은 herdr의 셸 pane에서 띄웁니다. 그래야 에이전트 세션이 끝나도 살아 있습니다.
 
 ```sh
-courierd
+courier serve
 ```
 
 그다음 같은 PC의 다른 pane에서:
@@ -68,7 +68,7 @@ pane id를 씁니다. `herdr agent prompt`가 받는 대상과 같습니다.
   때까지 기다립니다.
 - `courier send`로 보낸 메시지만 큐에 들어갑니다. `herdr agent prompt`를 직접 부르는 프로그램은
   여전히 입력 중인 글 위에 쓸 수 있습니다.
-- 상태 폴더 하나에 `courierd` 하나, PC 한 대 안에서만 동작합니다. 127.0.0.1에서만 받습니다.
+- 상태 폴더 하나에 `courier serve` 하나, PC 한 대 안에서만 동작합니다. 127.0.0.1에서만 받습니다.
 
 ## 쓰는 법
 
@@ -122,7 +122,7 @@ hold, 지난 한 시간의 실패, journal, 설정 파일, pane에 입력하는 
 
 | 명령 | 하는 일 |
 | --- | --- |
-| `courierd [--port N] [--tick S]` | 데몬 실행 (port 기본값 0은 빈 포트를 고름) |
+| `courier serve [--port N] [--tick S]` | 데몬을 포그라운드로 실행 (port 기본값 0은 빈 포트를 고름) |
 | `courier send TARGET TEXT [--wait] [--until STATUS] [--timeout MS] [--source NAME] [--human]` | 메시지를 큐에 넣음. `--human`은 큐의 에이전트 메시지보다 앞에 넣음 |
 | `courier status [TARGET] [--recent N] [--json] [--width N]` | pane별 큐, hold, 마지막 관찰 |
 | `courier hold TARGET [--ttl SECONDS] [--reason TEXT] [--owner NAME]` | 데몬이 그 pane에 입력하지 못하게 함 |

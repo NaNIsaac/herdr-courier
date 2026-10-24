@@ -42,6 +42,17 @@ hc agents --wide     # adds the terminal title column
 hc agents --json
 ```
 
+`hc panes` lays the workspace out by tab: each pane's label and working directory (`$DEV`,
+`$DATA` and `~` spelled out, long paths cut from the left). It warns when a pane label breaks the
+team's naming rule: `core`, `isaac` and `lane` panes are `<prefix> · <tab>`, `infra` panes
+`infra · <process>`, and a worker a lane starts `<tab> › <task>`; each warning carries the
+`herdr pane rename` command that fixes it.
+
+```sh
+hc panes
+hc panes --json
+```
+
 Only one `hcd` runs per state directory; a second one exits. If `hcd` is not running, `hc send` exits with status 3 and prints the manual path:
 
 ```sh

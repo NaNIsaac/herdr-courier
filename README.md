@@ -14,6 +14,8 @@ uv tool install git+https://github.com/NaNIsaac/herdr-console
 
 ## Run
 
+> **Not yet as a permanent service.** Until isaac-control-center stops running its own in-process dispatcher (its PR that switches it to read hcd), do not keep hcd running: icc's dispatcher defaults to on and uses another lock directory, so two writers could type into the same pane, and both packages install an `hc` command.
+
 Start the dispatcher in a herdr shell pane (not in an agent's background shell), then send from anywhere on the same machine:
 
 ```sh

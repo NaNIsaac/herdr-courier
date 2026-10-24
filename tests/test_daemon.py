@@ -68,10 +68,8 @@ def test_send_hold_release_cancel_and_status(herdr, start):
     _, sent = call(server, "POST", "/api/dispatch/send", {"target": "boss", "text": "r"}, t)
     item = sent["item"]
     assert item["pane_id"] == "w1:p1"
-    assert call(server, "POST", "/api/dispatch/hold", {"target": "boss", "ttl": 60}, t) == (
-        200,
-        {"pane_id": "w1:p1"},
-    )
+    status, held = call(server, "POST", "/api/dispatch/hold", {"target": "boss", "ttl": 60}, t)
+    assert (status, held["pane_id"], held["api"]) == (200, "w1:p1", 1)
     _, status = call(server, "GET", "/api/dispatch/status", token=t)
     assert status["status"]["panes"]["w1:p1"]["hold"]["seconds_left"] == 60
     assert status["worker"]["alive"] is True
@@ -270,3 +268,132 @@ def test_hc_with_stale_endpoint_counts_as_unavailable(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exc:
         cli.main(["status"])
     assert exc.value.code == cli.EXIT_UNAVAILABLE
+
+
+def raw_request(server, payload: bytes) -> bytes:
+    """Send bytes on one connection and return everything the server writes before closing."""
+    import socket
+
+    with socket.create_connection(("127.0.0.1", server.server_address[1]), timeout=5) as sock:
+        sock.sendall(payload)
+        chunks = []
+        while data := sock.recv(65536):
+            chunks.append(data)
+    return b"".join(chunks)
+
+
+@pytest.mark.parametrize("ttl", ["NaN", "Infinity", "-Infinity", "1e999"])
+def test_non_finite_ttl_is_refused_and_status_keeps_working(herdr, start, ttl):
+    herdr.add("w1:p1", "boss")
+    server, service = start(herdr)
+    raw = f'{{"target": "boss", "ttl": {ttl}}}'
+    status, _ = call(server, "POST", "/api/dispatch/hold", token=service.token, raw=raw)
+    assert status == 400
+    assert call(server, "GET", "/api/dispatch/status", token=service.token)[0] == 200
+    assert service.dispatcher.holds == {}
+
+
+def test_ttl_has_an_upper_bound(herdr, start):
+    herdr.add("w1:p1", "boss")
+    server, service = start(herdr)
+    body = {"target": "boss", "ttl": daemon.MAX_HOLD_SECONDS + 1}
+    assert call(server, "POST", "/api/dispatch/hold", body, service.token)[0] == 400
+
+
+def test_non_finite_wait_timeout_is_refused(herdr, start):
+    server, service = start(herdr)
+    raw = '{"id": "abc", "timeout": NaN}'
+    assert call(server, "POST", "/api/dispatch/wait", token=service.token, raw=raw)[0] == 400
+
+
+def test_chunked_bodies_are_refused_and_the_connection_closed(herdr, start):
+    server, service = start(herdr)
+    reply = raw_request(
+        server,
+        b"POST /api/dispatch/send HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        b"Authorization: Bearer " + service.token.encode() + b"\r\n"
+        b"Transfer-Encoding: chunked\r\n\r\n"
+        b"5\r\nhello\r\n0\r\n\r\n"
+        b"GET /api/dispatch/status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n",
+    )
+    assert reply.startswith(b"HTTP/1.1 411")
+    assert reply.count(b"HTTP/1.1 ") == 1
+
+
+@pytest.mark.parametrize("length", ["abc", "-1", "1.5"])
+def test_bad_content_length_is_a_400(herdr, start, length):
+    server, service = start(herdr)
+    reply = raw_request(
+        server,
+        b"POST /api/dispatch/send HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        b"Authorization: Bearer " + service.token.encode() + b"\r\n"
+        b"Content-Length: " + length.encode() + b"\r\n\r\n{}",
+    )
+    assert reply.startswith(b"HTTP/1.1 400")
+
+
+def test_body_after_an_early_401_is_not_parsed_as_a_request(herdr, start):
+    server, _ = start(herdr)
+    smuggled = b"GET /api/dispatch/status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+    reply = raw_request(
+        server,
+        b"POST /api/dispatch/send HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        b"Content-Length: " + str(len(smuggled)).encode() + b"\r\n\r\n" + smuggled,
+    )
+    assert reply.startswith(b"HTTP/1.1 401")
+    assert reply.count(b"HTTP/1.1 ") == 1
+
+
+def test_non_ascii_authorization_is_a_401(herdr, start):
+    server, _ = start(herdr)
+    reply = raw_request(
+        server,
+        b"GET /api/dispatch/status HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+        b"Authorization: Bearer \xc3\xa9\xff\r\n\r\n",
+    )
+    assert reply.startswith(b"HTTP/1.1 401")
+
+
+def test_client_refuses_an_unknown_api_version(herdr, start, monkeypatch):
+    start(herdr)
+    monkeypatch.setattr("herdr_console.client.API_VERSION", 2)
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["status"])
+    assert exc.value.code == cli.EXIT_UNAVAILABLE
+
+
+def test_malformed_endpoint_file_counts_as_unavailable(tmp_path, monkeypatch):
+    monkeypatch.setenv("HC_STATE_DIR", str(tmp_path))
+    endpoint_path(tmp_path).write_text('{"token": "t"}', encoding="utf-8")
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["status"])
+    assert exc.value.code == cli.EXIT_UNAVAILABLE
+
+
+def test_endpoint_pointing_at_another_server_counts_as_unavailable(tmp_path, monkeypatch):
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Html(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(404)
+            self.send_header("Content-Length", "6")
+            self.end_headers()
+            self.wfile.write(b"<html>")
+
+        def log_message(self, *args):
+            pass
+
+    other = HTTPServer(("127.0.0.1", 0), Html)
+    thread = threading.Thread(target=other.handle_request)
+    thread.start()
+    monkeypatch.setenv("HC_STATE_DIR", str(tmp_path))
+    endpoint_path(tmp_path).write_text(
+        json.dumps({"port": other.server_address[1], "token": "t", "pid": 1}), encoding="utf-8"
+    )
+    try:
+        with pytest.raises(SystemExit) as exc:
+            cli.main(["status"])
+        assert exc.value.code == cli.EXIT_UNAVAILABLE
+    finally:
+        thread.join(timeout=5)
+        other.server_close()

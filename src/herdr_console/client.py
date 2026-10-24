@@ -9,6 +9,8 @@ from typing import Any
 
 from .state import endpoint_path, state_dir
 
+API_VERSION = 1
+
 
 class Unavailable(Exception):
     """hcd is not running or dispatch is off; nothing was sent."""
@@ -32,27 +34,39 @@ def request(
     endpoint_file = endpoint_path(root or state_dir())
     try:
         endpoint = json.loads(endpoint_file.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise Unavailable(f"no endpoint file {endpoint_file} ({exc.__class__.__name__})") from exc
+        port, token = int(endpoint["port"]), str(endpoint["token"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise Unavailable(
+            f"no usable endpoint file {endpoint_file} ({exc.__class__.__name__})"
+        ) from exc
     req = urllib.request.Request(
-        f"http://127.0.0.1:{endpoint['port']}/api/dispatch/{path}",
+        f"http://127.0.0.1:{port}/api/dispatch/{path}",
         method=method,
         data=None if body is None else json.dumps(body).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {endpoint['token']}",
+            "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         },
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return json.loads(resp.read())
+            reply = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
-        detail = json.loads(exc.read() or b"{}").get("detail", exc.reason)
+        try:
+            detail = json.loads(exc.read() or b"{}").get("detail", exc.reason)
+        except ValueError:
+            # Something other than hcd answered on that port (a stale endpoint file).
+            raise Unavailable(f"port {port} does not answer like hcd ({exc.code})") from exc
         if exc.code == 503:
             raise Unavailable(detail) from exc
         raise Refused(detail) from exc
     except urllib.error.URLError as exc:
         # Refused before anything was sent: the server is not there.
-        raise Unavailable(f"cannot reach hcd on port {endpoint['port']}: {exc.reason}") from exc
+        raise Unavailable(f"cannot reach hcd on port {port}: {exc.reason}") from exc
     except (TimeoutError, ConnectionError, http.client.HTTPException) as exc:
         raise LostContact(f"hcd stopped responding: {exc!r}") from exc
+    except ValueError as exc:
+        raise Unavailable(f"port {port} does not answer like hcd (not JSON)") from exc
+    if reply.get("api") != API_VERSION:
+        raise Unavailable(f"hcd speaks API {reply.get('api')!r}, this client {API_VERSION}")
+    return reply

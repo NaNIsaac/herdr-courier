@@ -10,6 +10,7 @@ import argparse
 import hmac
 import io
 import json
+import math
 import os
 import secrets
 import sys
@@ -29,6 +30,9 @@ from .state import endpoint_path, journal_path, lock_path, state_dir
 
 TICK = 0.5
 MAX_BODY = 64 * 1024
+# Bumped when a route or field changes meaning; clients refuse a version they do not know.
+API_VERSION = 1
+MAX_HOLD_SECONDS = 7 * 24 * 3600
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})
 
 if os.name == "nt":
@@ -177,7 +181,8 @@ def _number(body: dict, key: str, default: float | None, low: float, high: float
     value = body.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise BadRequest(400, f"{key} must be a number")
-    if value < low or (high is not None and value > high):
+    # A hold with ttl NaN would never expire and break every later status read.
+    if not math.isfinite(value) or value < low or (high is not None and value > high):
         raise BadRequest(400, f"{key} is out of range")
     return float(value)
 
@@ -222,7 +227,7 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
             reason = _text(body, "reason", 0, 200, "")
             ttl = body.get("ttl")
             if ttl is not None:
-                ttl = _number(body, "ttl", None, 0, None)
+                ttl = _number(body, "ttl", None, 0, MAX_HOLD_SECONDS)
                 if ttl <= 0:
                     raise BadRequest(400, "ttl must be positive")
             return {"pane_id": run(lambda: d.hold(target, owner=owner, reason=reason, ttl=ttl))}
@@ -235,9 +240,15 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
     raise BadRequest(404, f"no route {method} /api/dispatch/{path}")
 
 
+def _reject_constant(name: str) -> float:
+    raise ValueError(f"{name} is not allowed")
+
+
 class Handler(BaseHTTPRequestHandler):
     server: "Server"
     protocol_version = "HTTP/1.1"
+    # An idle client must not hold a thread forever.
+    timeout = 30
 
     def do_GET(self) -> None:
         self._handle("GET")
@@ -249,9 +260,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self._reply(200, self._answer(method))
         except BadRequest as exc:
+            # The body may be unread; closing keeps leftover bytes from being parsed as a request.
+            self.close_connection = True
             self._reply(exc.status, {"detail": exc.detail})
         except Exception as exc:  # noqa: BLE001 - report it instead of dropping the connection
             traceback.print_exc()
+            self.close_connection = True
             self._reply(500, {"detail": f"internal error: {exc!r}"})
 
     def _answer(self, method: str) -> dict:
@@ -265,16 +279,21 @@ class Handler(BaseHTTPRequestHandler):
         service = self.server.service
         if service.dispatcher is None:
             raise BadRequest(503, "dispatch is turned off")
-        given = self.headers.get("Authorization") or ""
-        if not hmac.compare_digest(given, f"Bearer {service.token}"):
+        given = (self.headers.get("Authorization") or "").encode("utf-8", "surrogateescape")
+        if not hmac.compare_digest(given, f"Bearer {service.token}".encode()):
             raise BadRequest(401, "missing or wrong dispatch token")
         body: dict = {}
         if method == "POST":
-            length = int(self.headers.get("Content-Length") or 0)
+            if self.headers.get("Transfer-Encoding"):
+                raise BadRequest(411, "send a Content-Length body, not chunked")
+            raw_length = self.headers.get("Content-Length") or "0"
+            if not raw_length.isdigit():
+                raise BadRequest(400, "invalid Content-Length")
+            length = int(raw_length)
             if length > MAX_BODY:
                 raise BadRequest(413, "request body too large")
             try:
-                body = json.loads(self.rfile.read(length) or b"{}")
+                body = json.loads(self.rfile.read(length) or b"{}", parse_constant=_reject_constant)
             except ValueError as exc:
                 raise BadRequest(400, "body is not JSON") from exc
             if not isinstance(body, dict):
@@ -283,7 +302,7 @@ class Handler(BaseHTTPRequestHandler):
         return route(service, method, path, parse_qs(url.query), body)
 
     def _reply(self, status: int, payload: dict) -> None:
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        data = json.dumps({**payload, "api": API_VERSION}, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))

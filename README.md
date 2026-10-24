@@ -2,7 +2,38 @@
 
 A planned terminal-first **human console and prompt dispatcher** for [herdr](https://github.com/search?q=herdr&type=repositories) workspaces. Its primary purpose is to keep human typing separate from agent-generated prompts and make terminal/SSH operation possible without a browser.
 
-> **Status:** the dispatcher core is here (`herdr_console.core`: input-box classification, send conditions, per-pane queue with journal and holds, the pane writer), moved unchanged from Isaac Control Center where it was reviewed. The `hcd` daemon and the `hc` CLI come next; nothing here sends prompts on its own yet.
+> **Status:** `hcd` (the prompt dispatcher) and `hc` (its CLI) work and are tested against a real herdr pane. Status, pane management and diagnostics commands are not written yet.
+
+Agents send with `hc send <target> <text>` instead of `herdr agent prompt`. hcd queues the message per pane and types it only when the target's input box is empty, so a person's half-typed message is never submitted with it. Design and send conditions: [docs/DISPATCH.md](docs/DISPATCH.md).
+
+## Install
+
+```sh
+uv tool install git+https://github.com/NaNIsaac/herdr-console
+```
+
+## Run
+
+> **Not yet as a permanent service.** Until isaac-control-center stops running its own in-process dispatcher (its PR that switches it to read hcd), do not keep hcd running: icc's dispatcher defaults to on and uses another lock directory, so two writers could type into the same pane, and both packages install an `hc` command.
+
+Start the dispatcher in a herdr shell pane (not in an agent's background shell), then send from anywhere on the same machine:
+
+```sh
+hcd
+hc send boss "[lane] status report"
+hc send boss "[lane] status report" --wait --timeout 120000
+hc status
+hc hold boss --reason "typing on the phone" --ttl 600
+hc release boss
+```
+
+Only one `hcd` runs per state directory; a second one exits. If `hcd` is not running, `hc send` exits with status 3 and prints the manual path:
+
+```sh
+herdr agent read boss --source recent --lines 12 --format ansi
+# in the last input box, the text after the prompt glyph must be empty or dim
+herdr agent prompt boss "[lane] status report"
+```
 
 ## Development
 

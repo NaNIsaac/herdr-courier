@@ -42,6 +42,17 @@ hc agents --wide     # adds the terminal title column
 hc agents --json
 ```
 
+`hc doctor` reads without changing anything and says what is wrong and how to fix it: whether
+herdr answers, whether hcd is running (endpoint file, pid, status route), whether its worker is
+dispatching, items waiting over 10 minutes, holds with no expiry and failures in the last hour,
+unreadable journal lines, a second pane writer (isaac-control-center's in-process dispatcher), and
+Ovis health. It exits 1 when any check fails, so scripts can gate on it.
+
+```sh
+hc doctor
+hc doctor --json
+```
+
 Only one `hcd` runs per state directory; a second one exits. If `hcd` is not running, `hc send` exits with status 3 and prints the manual path:
 
 ```sh

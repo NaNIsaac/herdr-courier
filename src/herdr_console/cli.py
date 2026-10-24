@@ -16,7 +16,7 @@ import urllib.parse
 import uuid
 from typing import Any, NoReturn
 
-from . import agents, display
+from . import agents, display, doctor
 from .client import LostContact, Refused, Unavailable, request
 from .core.transport import CliHerdr, HerdrError
 
@@ -228,6 +228,15 @@ def cmd_agents(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    checks = doctor.diagnose(doctor.LiveProbes())
+    if args.json:
+        print(json.dumps([c.as_dict() for c in checks], ensure_ascii=False, indent=2))
+    else:
+        print(doctor.render(checks, args.width or display.terminal_width()))
+    return EXIT_FAILED if any(c.level is doctor.Level.FAIL for c in checks) else 0
+
+
 def cmd_cancel(args: argparse.Namespace) -> int:
     item = call("POST", "cancel", {"id": args.id})["item"]
     print(f"cancelled {item['id']} to {item['target']}")
@@ -271,6 +280,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--width", type=int, help="table width (default: the terminal, 62 if unknown)")
     p.add_argument("--wide", action="store_true", help="add the terminal title column")
     p.set_defaults(func=cmd_agents)
+
+    p = sub.add_parser("doctor", help="check herdr, hcd, its journal, a second writer and Ovis")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--width", type=int, help="line width (default: the terminal, 62 if unknown)")
+    p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("cancel", help="drop a queued message")
     p.add_argument("id")

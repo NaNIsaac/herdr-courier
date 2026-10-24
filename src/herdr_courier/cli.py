@@ -231,7 +231,8 @@ def cmd_agents(args: argparse.Namespace) -> int:
         )
         return 0
     width = args.width or display.terminal_width()
-    print(agents.render(rows, notes, width=width, dispatcher=summary, wide=args.wide))
+    color = display.color_wanted(args.color, sys.stdout)
+    print(agents.render(rows, notes, width=width, dispatcher=summary, wide=args.wide, color=color))
     return 0
 
 
@@ -310,6 +311,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true")
     p.add_argument("--width", type=int, help="table width (default: the terminal, 62 if unknown)")
     p.add_argument("--wide", action="store_true", help="add the terminal title column")
+    p.add_argument(
+        "--color",
+        nargs="?",
+        const="always",
+        default="auto",
+        choices=display.COLOR_CHOICES,
+        metavar="WHEN",
+        help="auto (default: a terminal, unless NO_COLOR is set), always (also bare --color), never",
+    )
     p.set_defaults(func=cmd_agents)
 
     p = sub.add_parser(

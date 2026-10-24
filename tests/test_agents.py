@@ -1,4 +1,5 @@
 import json
+import re
 
 from herdr_courier import agents, cli, display
 
@@ -163,3 +164,67 @@ def test_fit_truncates_wide_characters_by_display_width():
     assert display.fit("비서", 6) == "비서  "
     assert display.fit("비서실장", 5) == "비서…"
     assert display.cols(display.fit("비서실장", 5)) == 5
+
+
+SGR = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def test_color_marks_status_name_queue_and_header_without_moving_columns():
+    rows = agents.collect(FakeWorkspace(), DISPATCH)
+    notes = agents.warnings(rows)
+    plain = agents.render(rows, notes, width=62, dispatcher="running")
+    colored = agents.render(rows, notes, width=62, dispatcher="running", color=True)
+    assert SGR.sub("", colored) == plain
+    header, boss, secretary, shell = colored.splitlines()[1:5]
+    assert "\x1b[4mpane\x1b[0m" in header
+    assert "\x1b[1mboss\x1b[0m" in boss
+    assert "\x1b[32mworking\x1b[0m" in boss
+    assert "\x1b[90midle\x1b[0m" in secretary
+    assert "\x1b[33mq2 hold\x1b[0m" in secretary
+    assert "\x1b[2mshell\x1b[0m" in shell
+    assert "\x1b[2mw1:p4H\x1b[0m" in shell
+    assert any(line.startswith("\x1b[33m! tab") for line in colored.splitlines())
+
+
+def test_done_and_blocked_have_their_own_colours():
+    ws = FakeWorkspace()
+    ws.agents[0]["agent_status"] = "done"
+    ws.agents[1]["agent_status"] = "blocked"
+    text = agents.render(agents.collect(ws, None), [], width=62, dispatcher="x", color=True)
+    assert "\x1b[94mdone\x1b[0m" in text
+    assert "\x1b[1;91mblocked\x1b[0m" in text
+
+
+class Stream:
+    def __init__(self, tty):
+        self.tty = tty
+
+    def isatty(self):
+        return self.tty
+
+
+def test_color_wanted_follows_the_flag_then_no_color_and_the_terminal(monkeypatch):
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("TERM", raising=False)
+    assert display.color_wanted("auto", Stream(True))
+    assert not display.color_wanted("auto", Stream(False))
+    assert display.color_wanted("always", Stream(False))
+    assert not display.color_wanted("never", Stream(True))
+    monkeypatch.setenv("NO_COLOR", "1")
+    assert not display.color_wanted("auto", Stream(True))
+    assert display.color_wanted("always", Stream(True))
+    monkeypatch.setenv("NO_COLOR", "")
+    assert display.color_wanted("auto", Stream(True))
+    monkeypatch.setenv("TERM", "dumb")
+    assert not display.color_wanted("auto", Stream(True))
+
+
+def test_cli_agents_bare_color_flag_colours_a_pipe(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("COURIER_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "CliHerdr", FakeWorkspace)
+    assert cli.main(["agents", "--width", "58"]) == 0
+    assert "\x1b[" not in capsys.readouterr().out
+    assert cli.main(["agents", "--color", "--width", "58"]) == 0
+    assert "\x1b[32mworking" in capsys.readouterr().out
+    assert cli.main(["agents", "--color=never"]) == 0
+    assert "\x1b[" not in capsys.readouterr().out

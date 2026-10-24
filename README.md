@@ -42,6 +42,17 @@ hc agents --wide     # adds the terminal title column
 hc agents --json
 ```
 
+`hc doctor` reads without changing anything and says what is wrong and how to fix it: whether
+herdr answers, whether hcd is running (endpoint file, pid, status route), whether its worker is
+dispatching, items waiting over 10 minutes, holds with no expiry and failures in the last hour,
+unreadable journal lines, a second pane writer (isaac-control-center's in-process dispatcher), and
+Ovis health. It exits 1 when any check fails, so scripts can gate on it.
+
+```sh
+hc doctor
+hc doctor --json
+```
+
 `hc panes` lays the workspace out by tab: each pane's label and working directory (`$DEV`,
 `$DATA` and `~` spelled out, long paths cut from the left). It warns when a pane label breaks the
 team's naming rule: `core`, `isaac` and `lane` panes are `<prefix> · <tab>`, `infra` panes

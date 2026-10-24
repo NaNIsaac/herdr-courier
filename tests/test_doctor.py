@@ -65,7 +65,7 @@ class FakeProbes:
 
 @pytest.fixture
 def roots(tmp_path):
-    root, other = tmp_path / "courierd", tmp_path / "other"
+    root, other = tmp_path / "state", tmp_path / "other"
     root.mkdir()
     (root / "endpoint.json").write_text(json.dumps({"port": 65499, "token": "t", "pid": 408}))
     return root, other
@@ -86,7 +86,7 @@ def test_healthy(roots):
     assert {c.level for c in checks.values()} == {Level.OK}
     assert list(checks) == [
         "herdr",
-        "courierd",
+        "dispatcher",
         "worker",
         "queue",
         "journal",
@@ -115,21 +115,21 @@ def test_blocked_agent_is_a_warning(roots):
     assert run(probes, roots)["herdr"].level is Level.WARN
 
 
-def test_courierd_not_running(roots):
+def test_dispatcher_not_running(roots):
     (roots[0] / "endpoint.json").unlink()
     checks = run(FakeProbes(), roots)
-    assert checks["courierd"].level is Level.FAIL
+    assert checks["dispatcher"].level is Level.FAIL
     assert "worker" not in checks
-    assert checks["courierd"].fix == doctor.START_DAEMON
+    assert checks["dispatcher"].fix == doctor.START_DAEMON
 
 
-def test_stale_endpoint_and_hung_courierd(roots):
+def test_stale_endpoint_and_hung_dispatcher(roots):
     probes = FakeProbes()
-    probes.daemon = Unavailable("cannot reach courierd on port 65499")
+    probes.daemon = Unavailable("cannot reach courier serve on port 65499")
     probes.alive = set()
-    assert "stale endpoint" in run(probes, roots)["courierd"].detail
+    assert "stale endpoint" in run(probes, roots)["dispatcher"].detail
     probes.alive = {408}
-    hung = run(probes, roots)["courierd"]
+    hung = run(probes, roots)["dispatcher"]
     assert hung.level is Level.FAIL
     assert hung.detail.startswith("pid 408 is alive but does not answer")
 
@@ -223,7 +223,7 @@ def test_render_fits_a_phone(roots):
     lines = text.splitlines()
     assert lines[0] == "courier doctor: 1 fail, 1 warn"
     assert max(display.cols(line) for line in lines) <= 62
-    assert any(line.lstrip().startswith("fix: start courierd") for line in lines)
+    assert any(line.lstrip().startswith("fix: start courier serve") for line in lines)
 
 
 def test_cli_exit_code(monkeypatch, roots, capsys):

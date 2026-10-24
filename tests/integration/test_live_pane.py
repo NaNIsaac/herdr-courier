@@ -146,12 +146,21 @@ def test_hold_keeps_dispatcher_out_until_release(dummy, dispatcher):
     assert submitted(log)[before:] == ["[lane] after hold"]
 
 
-def test_courierd_and_courier_end_to_end(dummy, tmp_path):
-    # A real courierd process on its own state directory (not the user's), driven by the real courier.
+def test_serve_and_send_end_to_end(dummy, tmp_path):
+    # A real courier serve on its own state directory (not the user's), driven by the real courier.
     pane, log = dummy
     env = {**os.environ, "COURIER_STATE_DIR": str(tmp_path / "courier-state"), "PYTHONUTF8": "1"}
-    courierd = subprocess.Popen(
-        [sys.executable, "-m", "herdr_courier.daemon", "--transport", "pane", "--tick", "0.2"],
+    server = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "herdr_courier.cli",
+            "serve",
+            "--transport",
+            "pane",
+            "--tick",
+            "0.2",
+        ],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -159,7 +168,7 @@ def test_courierd_and_courier_end_to_end(dummy, tmp_path):
     )
     try:
         endpoint = tmp_path / "courier-state" / "endpoint.json"
-        assert until(endpoint.exists, 15), "courierd did not start"
+        assert until(endpoint.exists, 15), "courier serve did not start"
         before = len(submitted(log))
         herdr("pane", "send-text", pane, "isaac half typed ")
 
@@ -173,7 +182,7 @@ def test_courierd_and_courier_end_to_end(dummy, tmp_path):
                 check=False,
             )
 
-        queued = courier("send", pane, "[lane] via courierd")
+        queued = courier("send", pane, "[lane] via server")
         assert queued.returncode == 0, queued.stderr
         time.sleep(3)
         assert len(submitted(log)) == before
@@ -181,7 +190,7 @@ def test_courierd_and_courier_end_to_end(dummy, tmp_path):
 
         herdr("pane", "send-keys", pane, "ctrl+u")
         assert until(lambda: len(submitted(log)) > before, 15)
-        assert submitted(log)[before:] == ["[lane] via courierd"]
+        assert submitted(log)[before:] == ["[lane] via server"]
     finally:
-        courierd.terminate()
-        courierd.wait(timeout=10)
+        server.terminate()
+        server.wait(timeout=10)

@@ -1,4 +1,4 @@
-"""Where courierd keeps its journal, lock and endpoint file, and courier its config."""
+"""Where courier serve keeps its journal, lock and endpoint file, and courier its config."""
 
 import os
 import sys
@@ -37,7 +37,7 @@ def adopt_old_state() -> Path | None:
 
 
 def endpoint_path(root: Path) -> Path:
-    """Where courierd tells courier its port and token."""
+    """Where courier serve tells courier its port and token."""
     return root / "endpoint.json"
 
 

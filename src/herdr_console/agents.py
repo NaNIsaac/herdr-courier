@@ -7,13 +7,12 @@ phone the tab label is the only identity on screen, so a tab has to be named aft
 holds; this table joins tabs, panes, agents and hcd's queue so the mismatches show.
 """
 
-import shutil
-import unicodedata
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
+from .display import cols, fit, wrap
+
 NO_AGENT = "shell"
-ELLIPSIS = "…"
 
 
 class Workspace(Protocol):
@@ -90,45 +89,6 @@ def warnings(rows: list[Row]) -> list[str]:
     return out
 
 
-def _cols(text: str) -> int:
-    """Display columns: East Asian wide and fullwidth characters take two cells (Korean tab labels)."""
-    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1 for c in text)
-
-
-def _fit(text: str, width: int) -> str:
-    if width <= 0:
-        return ""
-    if _cols(text) <= width:
-        return text + " " * (width - _cols(text))
-    if width == 1:
-        return ELLIPSIS
-    out, used = [], 0
-    for c in text:
-        w = _cols(c)
-        if used + w > width - 1:
-            break
-        out.append(c)
-        used += w
-    return "".join(out) + ELLIPSIS + " " * (width - 1 - used)
-
-
-def _wrap(text: str, width: int, first: str, rest: str) -> list[str]:
-    """Greedy word wrap by display columns; textwrap counts code points, not cells."""
-    lines: list[str] = []
-    current, prefix = "", first
-    for word in text.split():
-        candidate = f"{current} {word}" if current else prefix + word
-        if current and _cols(candidate) > width:
-            lines.append(current)
-            prefix = rest
-            current = prefix + word
-        else:
-            current = candidate
-    if current:
-        lines.append(current)
-    return lines
-
-
 def _hcd_cell(row: Row) -> str:
     parts = []
     if row.queued:
@@ -148,9 +108,9 @@ def render(
 ) -> str:
     """A table that fits a phone terminal; ``wide`` adds the terminal title column."""
     width = max(width, 40)
-    pane_w = max([len("pane"), *(_cols(r.pane_id) for r in rows)])
-    status_w = max([len("status"), *(_cols(r.status) for r in rows)])
-    hcd_w = max([len("hcd"), *(_cols(_hcd_cell(r)) for r in rows)])
+    pane_w = max([len("pane"), *(cols(r.pane_id) for r in rows)])
+    status_w = max([len("status"), *(cols(r.status) for r in rows)])
+    hcd_w = max([len("hcd"), *(cols(_hcd_cell(r)) for r in rows)])
     fixed = 2 + pane_w + 2 + 2 + status_w + 2 + hcd_w
     flexible = width - fixed - 2
     tab_w = max(6, flexible // 2)
@@ -162,18 +122,21 @@ def render(
     def line(mark: str, pane: str, tab: str, agent: str, status: str, hcd_cell: str, title: str):
         cells = [
             mark,
-            _fit(pane, pane_w),
-            _fit(tab, tab_w),
-            _fit(agent, agent_w),
-            _fit(status, status_w),
-            _fit(hcd_cell, hcd_w),
+            fit(pane, pane_w),
+            fit(tab, tab_w),
+            fit(agent, agent_w),
+            fit(status, status_w),
+            fit(hcd_cell, hcd_w),
         ]
         text = " ".join(cells)
         if wide:
-            text += " " + _fit(title, max(0, width - _cols(text) - 1))
+            text += " " + fit(title, max(0, width - cols(text) - 1))
         return text.rstrip()
 
-    out = [f"hcd: {hcd}", line(" ", "pane", "tab", "agent", "status", "hcd", "title")]
+    out = [
+        *wrap(f"hcd: {hcd}", width, "", "  "),
+        line(" ", "pane", "tab", "agent", "status", "hcd", "title"),
+    ]
     for row in rows:
         out.append(
             line(
@@ -186,14 +149,10 @@ def render(
                 row.title,
             )
         )
-    out.append(_fit("* = focused on the herdr server (any client)", width).rstrip())
-    out.append(_fit("shell = no agent in that pane", width).rstrip())
+    out.append(fit("* = focused on the herdr server (any client)", width).rstrip())
+    out.append(fit("shell = no agent in that pane", width).rstrip())
     if notes:
         out.append("")
         for note in notes:
-            out.extend(_wrap(note, width, "! ", "  "))
+            out.extend(wrap(note, width, "! ", "  "))
     return "\n".join(out)
-
-
-def terminal_width() -> int:
-    return shutil.get_terminal_size((62, 24)).columns

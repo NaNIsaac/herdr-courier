@@ -27,6 +27,9 @@ hc hold boss --reason "typing on the phone" --ttl 600
 hc release boss
 ```
 
+`hc status` wraps to the terminal width (62 columns when it cannot tell; `--width` sets it), so a
+phone shows every line whole. Delivered items in its recent log take one line each; failures wrap.
+
 `hc agents` needs no hcd. It lists every pane with its tab label, live agent name, status and
 hcd queue, sized for a phone terminal, and warns when a tab is not named after the agent it holds.
 herdr's mobile layout (62-column Termux screens fall under the default `ui.mobile_width_threshold`

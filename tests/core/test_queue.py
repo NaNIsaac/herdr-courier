@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from herdr_console.core.queue import MAX_ATTEMPTS, Dispatcher, DispatchError, State
+from herdr_courier.core.queue import MAX_ATTEMPTS, Dispatcher, DispatchError, State
 
 
 def test_waits_while_human_is_typing_and_never_merges(herdr, make_dispatcher, run):
@@ -265,7 +265,7 @@ def test_restart_during_submit_never_writes_again(herdr, clock, tmp_path, run):
 
 def test_cancel_during_submit_is_refused(herdr, make_dispatcher, run):
     # Review 1b: a cancel that arrives while the text is being written must not be accepted,
-    # or the message goes out while hc reports it cancelled.
+    # or the message goes out while courier reports it cancelled.
     pane = herdr.add("w1:p1")
     d = make_dispatcher()
     item = d.enqueue("w1:p1", "hello", source="t")
@@ -336,14 +336,14 @@ def test_expired_hold_is_not_restored(herdr, clock, tmp_path, monkeypatch):
     d = Dispatcher(herdr, journal, clock=clock, log=lambda _: None)
     d.hold("w1:p1", owner="t", reason="short", ttl=5)
     later = time.time() + 10
-    monkeypatch.setattr("herdr_console.core.queue.time.time", lambda: later)
+    monkeypatch.setattr("herdr_courier.core.queue.time.time", lambda: later)
     restarted = Dispatcher(herdr, journal, clock=clock, log=lambda _: None)
     assert restarted.holds == {}
 
 
 def _arm_after_first_pass(d, monkeypatch, action):
     """Run ``action`` once, right after the first observation that passes the gate."""
-    import herdr_console.core.queue as q
+    import herdr_courier.core.queue as q
 
     real = q.check
     fired = []

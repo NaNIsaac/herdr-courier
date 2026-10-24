@@ -1,6 +1,6 @@
 """Collision scenarios against a real herdr pane running ``dummy_agent.py``.
 
-Opt-in: needs a live herdr session (HERDR_ENV=1), Windows, and HC_INTEGRATION=1. The test opens
+Opt-in: needs a live herdr session (HERDR_ENV=1), Windows, and COURIER_INTEGRATION=1. The test opens
 its own tab without taking focus, and closes it afterwards; it never writes to any other pane.
 """
 
@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from herdr_console.core.queue import Dispatcher, State
-from herdr_console.core.transport import PaneHerdr
+from herdr_courier.core.queue import Dispatcher, State
+from herdr_courier.core.transport import PaneHerdr
 
 pytestmark = [
     pytest.mark.integration,
@@ -22,9 +22,9 @@ pytestmark = [
         not (
             sys.platform == "win32"
             and os.environ.get("HERDR_ENV") == "1"
-            and os.environ.get("HC_INTEGRATION") == "1"
+            and os.environ.get("COURIER_INTEGRATION") == "1"
         ),
-        reason="needs Windows, a live herdr session and HC_INTEGRATION=1",
+        reason="needs Windows, a live herdr session and COURIER_INTEGRATION=1",
     ),
 ]
 
@@ -64,7 +64,7 @@ def dummy(tmp_path_factory):
         "--workspace",
         os.environ["HERDR_WORKSPACE_ID"],
         "--label",
-        "hc-test",
+        "courier-test",
         "--cwd",
         str(tmp),
         "--no-focus",
@@ -79,7 +79,7 @@ def dummy(tmp_path_factory):
             "report-agent",
             pane,
             "--source",
-            "hc-test",
+            "courier-test",
             "--agent",
             "dummy",
             "--state",
@@ -146,26 +146,26 @@ def test_hold_keeps_dispatcher_out_until_release(dummy, dispatcher):
     assert submitted(log)[before:] == ["[lane] after hold"]
 
 
-def test_hcd_and_hc_end_to_end(dummy, tmp_path):
-    # A real hcd process on its own state directory (not the user's), driven by the real hc.
+def test_courierd_and_courier_end_to_end(dummy, tmp_path):
+    # A real courierd process on its own state directory (not the user's), driven by the real courier.
     pane, log = dummy
-    env = {**os.environ, "HC_STATE_DIR": str(tmp_path / "hc-state"), "PYTHONUTF8": "1"}
-    hcd = subprocess.Popen(
-        [sys.executable, "-m", "herdr_console.daemon", "--transport", "pane", "--tick", "0.2"],
+    env = {**os.environ, "COURIER_STATE_DIR": str(tmp_path / "courier-state"), "PYTHONUTF8": "1"}
+    courierd = subprocess.Popen(
+        [sys.executable, "-m", "herdr_courier.daemon", "--transport", "pane", "--tick", "0.2"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         encoding="utf-8",
     )
     try:
-        endpoint = tmp_path / "hc-state" / "endpoint.json"
-        assert until(endpoint.exists, 15), "hcd did not start"
+        endpoint = tmp_path / "courier-state" / "endpoint.json"
+        assert until(endpoint.exists, 15), "courierd did not start"
         before = len(submitted(log))
         herdr("pane", "send-text", pane, "isaac half typed ")
 
-        def hc(*args):
+        def courier(*args):
             return subprocess.run(
-                [sys.executable, "-m", "herdr_console.cli", *args],
+                [sys.executable, "-m", "herdr_courier.cli", *args],
                 env=env,
                 capture_output=True,
                 encoding="utf-8",
@@ -173,15 +173,15 @@ def test_hcd_and_hc_end_to_end(dummy, tmp_path):
                 check=False,
             )
 
-        queued = hc("send", pane, "[lane] via hcd")
+        queued = courier("send", pane, "[lane] via courierd")
         assert queued.returncode == 0, queued.stderr
         time.sleep(3)
         assert len(submitted(log)) == before
-        assert "input typed" in hc("status").stdout
+        assert "input typed" in courier("status").stdout
 
         herdr("pane", "send-keys", pane, "ctrl+u")
         assert until(lambda: len(submitted(log)) > before, 15)
-        assert submitted(log)[before:] == ["[lane] via hcd"]
+        assert submitted(log)[before:] == ["[lane] via courierd"]
     finally:
-        hcd.terminate()
-        hcd.wait(timeout=10)
+        courierd.terminate()
+        courierd.wait(timeout=10)

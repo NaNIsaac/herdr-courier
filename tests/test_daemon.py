@@ -6,17 +6,17 @@ import time
 
 import pytest
 
-from herdr_console import cli, daemon
-from herdr_console.core.queue import Dispatcher
-from herdr_console.daemon import AlreadyRunning, DispatchService, InstanceLock, Server
-from herdr_console.state import endpoint_path, lock_path
+from herdr_courier import cli, daemon
+from herdr_courier.core.queue import Dispatcher
+from herdr_courier.daemon import AlreadyRunning, DispatchService, InstanceLock, Server
+from herdr_courier.state import endpoint_path, lock_path
 
 
 @pytest.fixture
 def start(tmp_path, monkeypatch):
-    """Start hcd on a free port with a fake herdr; hc finds it through HC_STATE_DIR."""
-    monkeypatch.setenv("HC_STATE_DIR", str(tmp_path))
-    monkeypatch.setattr("herdr_console.core.gate.DEBOUNCE", 0.1)
+    """Start courierd on a free port with a fake herdr; courier finds it through COURIER_STATE_DIR."""
+    monkeypatch.setenv("COURIER_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr("herdr_courier.core.gate.DEBOUNCE", 0.1)
     running = []
 
     def go(herdr, *, enabled=True, tick=0.05):
@@ -149,7 +149,7 @@ def test_second_instance_is_refused(tmp_path, monkeypatch):
     first = InstanceLock(lock_path(tmp_path))
     with pytest.raises(AlreadyRunning):
         InstanceLock(lock_path(tmp_path))
-    monkeypatch.setenv("HC_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("COURIER_STATE_DIR", str(tmp_path))
     assert daemon.main(["--port", "0"]) == 1
     first.release()
     InstanceLock(lock_path(tmp_path)).release()
@@ -199,7 +199,7 @@ def test_endpoint_file_is_written_over_a_stale_temp_file(tmp_path, herdr):
         service.stop()
 
 
-def test_hc_send_wait_through_live_hcd(herdr, start, capsys, monkeypatch):
+def test_send_wait_through_live_courierd(herdr, start, capsys, monkeypatch):
     pane = herdr.add("w1:p1", "boss")
     start(herdr)
     monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: type("R", (), {"returncode": 0}))
@@ -249,19 +249,19 @@ def test_hc_retries_a_lost_reply_without_queuing_twice(herdr, start, monkeypatch
     assert pane.submitted == ["[lane] once"]
 
 
-def test_hc_without_hcd_fails_loudly_with_manual_path(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("HC_STATE_DIR", str(tmp_path))
+def test_hc_without_daemon_fails_loudly_with_manual_path(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COURIER_STATE_DIR", str(tmp_path))
     with pytest.raises(SystemExit) as exc:
         cli.main(["send", "boss", "[lane] report"])
     assert exc.value.code == cli.EXIT_UNAVAILABLE
     err = capsys.readouterr().err
     assert "Nothing was sent" in err
-    assert "Start hcd" in err
+    assert "Start courierd" in err
     assert 'herdr agent prompt boss "[lane] report"' in err
 
 
 def test_hc_with_stale_endpoint_counts_as_unavailable(tmp_path, monkeypatch):
-    monkeypatch.setenv("HC_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("COURIER_STATE_DIR", str(tmp_path))
     path = endpoint_path(tmp_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"port": 9, "token": "t", "pid": 1}), encoding="utf-8")
@@ -356,14 +356,14 @@ def test_non_ascii_authorization_is_a_401(herdr, start):
 
 def test_client_refuses_an_unknown_api_version(herdr, start, monkeypatch):
     start(herdr)
-    monkeypatch.setattr("herdr_console.client.API_VERSION", 2)
+    monkeypatch.setattr("herdr_courier.client.API_VERSION", 2)
     with pytest.raises(SystemExit) as exc:
         cli.main(["status"])
     assert exc.value.code == cli.EXIT_UNAVAILABLE
 
 
 def test_malformed_endpoint_file_counts_as_unavailable(tmp_path, monkeypatch):
-    monkeypatch.setenv("HC_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("COURIER_STATE_DIR", str(tmp_path))
     endpoint_path(tmp_path).write_text('{"token": "t"}', encoding="utf-8")
     with pytest.raises(SystemExit) as exc:
         cli.main(["status"])
@@ -386,7 +386,7 @@ def test_endpoint_pointing_at_another_server_counts_as_unavailable(tmp_path, mon
     other = HTTPServer(("127.0.0.1", 0), Html)
     thread = threading.Thread(target=other.handle_request)
     thread.start()
-    monkeypatch.setenv("HC_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("COURIER_STATE_DIR", str(tmp_path))
     endpoint_path(tmp_path).write_text(
         json.dumps({"port": other.server_address[1], "token": "t", "pid": 1}), encoding="utf-8"
     )

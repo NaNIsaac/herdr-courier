@@ -1,9 +1,9 @@
-"""hc doctor: what is wrong with herdr, hcd and the tools around them, without changing anything.
+"""courier doctor: what is wrong with herdr, courierd and the tools around them, read only.
 
-Every check only reads: herdr's CLI, hcd's endpoint file, status route and journal, the endpoint
-file of isaac-control-center's in-process dispatcher (a second pane writer while it still has
-one), and Ovis's unauthenticated health route. No lock is taken, so a doctor run cannot stop an
-hcd that is starting at the same moment.
+Every check only reads: herdr's CLI, courierd's endpoint file, status route and journal,
+config.toml, the endpoint files of other programs that write prompts into panes
+(``doctor.other_writers``), and Ovis's unauthenticated health route (``doctor.ovis_url``). No
+lock is taken, so a doctor run cannot stop a courierd that is starting at the same moment.
 """
 
 import json
@@ -19,15 +19,15 @@ from typing import Any, Protocol
 
 from . import display
 from .client import LostContact, Refused, Unavailable, request
+from .config import Config, ConfigError, config_path, load
 from .core.transport import CliHerdr, HerdrError
 from .state import endpoint_path, journal_path, state_dir
 
-OVIS_URL = "http://127.0.0.1:7317"
 STALE_TICK = 10.0
 PENDING_TOO_LONG = 600.0
 RECENT_FAILURE = 3600.0
 JOURNAL_TOO_BIG = 10 * 1024 * 1024
-START_HCD = "start hcd in a herdr shell pane (README, Run)"
+START_DAEMON = "start courierd in a herdr shell pane (README, Run)"
 
 
 class Level(StrEnum):
@@ -51,7 +51,7 @@ class Probes(Protocol):
     def herdr_version(self) -> str: ...
     def pane_list(self) -> list[dict[str, Any]]: ...
     def agent_list(self) -> list[dict[str, Any]]: ...
-    def hcd_status(self, root: Path) -> dict[str, Any]: ...
+    def daemon_status(self, root: Path) -> dict[str, Any]: ...
     def pid_alive(self, pid: int) -> bool: ...
     def ovis_health(self, url: str) -> dict[str, Any]: ...
 
@@ -78,7 +78,7 @@ class LiveProbes:
     def agent_list(self) -> list[dict[str, Any]]:
         return self._herdr.agent_list()
 
-    def hcd_status(self, root: Path) -> dict[str, Any]:
+    def daemon_status(self, root: Path) -> dict[str, Any]:
         return request("GET", "status", timeout=5.0, root=root)
 
     def pid_alive(self, pid: int) -> bool:
@@ -151,33 +151,37 @@ def check_herdr(probes: Probes) -> tuple[Check, str | None]:
     return Check("herdr", Level.OK, detail), version
 
 
-def check_hcd(probes: Probes, root: Path, now: float) -> list[Check]:
+def check_daemon(probes: Probes, root: Path, now: float) -> list[Check]:
     endpoint = _endpoint(endpoint_path(root))
     if endpoint is None:
-        return [Check("hcd", Level.FAIL, f"not running (no endpoint file in {root})", START_HCD)]
+        return [
+            Check("courierd", Level.FAIL, f"not running (no endpoint file in {root})", START_DAEMON)
+        ]
     pid = int(endpoint.get("pid") or 0)
     alive = probes.pid_alive(pid)
     try:
-        reply = probes.hcd_status(root)
+        reply = probes.daemon_status(root)
     except (Unavailable, LostContact, Refused) as exc:
         if not alive:
             return [
                 Check(
-                    "hcd",
+                    "courierd",
                     Level.FAIL,
                     f"not running (pid {pid} has exited; stale endpoint file)",
-                    START_HCD,
+                    START_DAEMON,
                 )
             ]
         return [
             Check(
-                "hcd",
+                "courierd",
                 Level.FAIL,
                 f"pid {pid} is alive but does not answer: {exc}",
-                "read the hcd pane; if it is stuck, stop it with Ctrl-C and start it again",
+                "read the courierd pane; if it is stuck, stop it with Ctrl-C and start it again",
             )
         ]
-    checks = [Check("hcd", Level.OK, f"pid {pid}, port {endpoint.get('port')}, api {reply['api']}")]
+    checks = [
+        Check("courierd", Level.OK, f"pid {pid}, port {endpoint.get('port')}, api {reply['api']}")
+    ]
     worker = reply.get("worker") or {}
     tick = worker.get("seconds_since_tick")
     if not worker.get("alive") or tick is None or tick > STALE_TICK:
@@ -186,7 +190,7 @@ def check_hcd(probes: Probes, root: Path, now: float) -> list[Check]:
                 "worker",
                 Level.FAIL,
                 f"not dispatching (alive={worker.get('alive')}, last pass {tick} s ago)",
-                "restart hcd; queued items are kept in its journal",
+                "restart courierd; queued items are kept in its journal",
             )
         )
     elif worker.get("errors"):
@@ -227,7 +231,7 @@ def check_queue(status: dict[str, Any], now: float) -> Check:
         problems.append(f"{len(failed)} failed in the last hour (last: {failed[-1]['reason']})")
     if problems:
         return Check(
-            "queue", Level.WARN, "; ".join([detail, *problems]), "hc status shows each item"
+            "queue", Level.WARN, "; ".join([detail, *problems]), "courier status shows each item"
         )
     return Check("queue", Level.OK, detail)
 
@@ -235,7 +239,7 @@ def check_queue(status: dict[str, Any], now: float) -> Check:
 def check_journal(root: Path) -> Check:
     path = journal_path(root)
     if not path.exists():
-        return Check("journal", Level.OK, "empty (nothing queued since hcd started)")
+        return Check("journal", Level.OK, "empty (nothing queued since courierd started)")
     size = path.stat().st_size
     with path.open(encoding="utf-8", errors="replace") as f:
         lines = f.read().splitlines()
@@ -254,30 +258,50 @@ def check_journal(root: Path) -> Check:
             f"inspect {path}",
         )
     if size > JOURNAL_TOO_BIG:
-        return Check("journal", Level.WARN, f"{detail}; compacted only when hcd restarts")
+        return Check("journal", Level.WARN, f"{detail}; compacted only when courierd restarts")
     return Check("journal", Level.OK, detail)
 
 
-def icc_state_dir() -> Path:
-    if override := os.environ.get("ICC_STATE_DIR", "").strip():
-        return Path(override).expanduser()
-    return Path.home() / ".isaac-control-center"
+def check_config(root: Path, config: Config | None) -> tuple[Check, Config]:
+    if config is not None:
+        source = str(config.path) if config.path else "built-in defaults"
+        return Check("config", Level.OK, source), config
+    path = config_path(root)
+    try:
+        config = load(path)
+    except ConfigError as exc:
+        return Check(
+            "config", Level.FAIL, str(exc), "fix or remove the file; the checks below use defaults"
+        ), Config()
+    if config.path is None:
+        return Check("config", Level.OK, "built-in defaults (no config.toml)"), config
+    return Check("config", Level.OK, "config.toml in the state directory"), config
 
 
-def check_second_writer(probes: Probes, icc_root: Path) -> Check:
-    path = icc_root / "dispatch" / "endpoint.json"
-    endpoint = _endpoint(path)
-    if endpoint is None:
-        return Check("icc", Level.OK, "no in-process dispatcher")
-    pid = int(endpoint.get("pid") or 0)
-    if not probes.pid_alive(pid):
-        return Check("icc", Level.OK, f"no in-process dispatcher (stale endpoint, pid {pid})")
-    return Check(
-        "icc",
-        Level.FAIL,
-        f"isaac-control-center pid {pid} runs its own dispatcher: two pane writers",
-        "restart icc with ICC_DISPATCH=0 until it is a client of hcd",
-    )
+def check_other_writers(probes: Probes, paths: tuple[str, ...]) -> Check:
+    """Fail while another program that writes prompts into panes is running."""
+    if not paths:
+        return Check("writers", Level.OK, "no other writers configured")
+    live, stale = [], 0
+    for raw in paths:
+        path = Path(raw).expanduser()
+        endpoint = _endpoint(path)
+        if endpoint is None:
+            continue
+        pid = int(endpoint.get("pid") or 0)
+        if probes.pid_alive(pid):
+            live.append(f"pid {pid} ({path})")
+        else:
+            stale += 1
+    if live:
+        return Check(
+            "writers",
+            Level.FAIL,
+            f"another dispatcher is running: {', '.join(live)}; two pane writers",
+            "stop it, or make it send through courierd",
+        )
+    detail = "no other dispatcher running"
+    return Check("writers", Level.OK, f"{detail} ({stale} stale endpoint)" if stale else detail)
 
 
 def check_ovis(probes: Probes, url: str, herdr_version: str | None) -> Check:
@@ -285,7 +309,9 @@ def check_ovis(probes: Probes, url: str, herdr_version: str | None) -> Check:
         health = probes.ovis_health(url)
     except (OSError, ValueError) as exc:
         reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
-        return Check("ovis", Level.WARN, f"no answer from {url} ({reason}); hcd does not need it")
+        return Check(
+            "ovis", Level.WARN, f"no answer from {url} ({reason}); courierd does not need it"
+        )
     if not health.get("ok"):
         return Check("ovis", Level.WARN, f"health is not ok: {health}")
     seen = (health.get("herdr") or {}).get("version")
@@ -300,27 +326,31 @@ def diagnose(
     probes: Probes,
     *,
     root: Path | None = None,
-    icc_root: Path | None = None,
-    ovis_url: str | None = None,
+    config: Config | None = None,
     now: float | None = None,
 ) -> list[Check]:
+    """Every check in order; ``config`` replaces reading config.toml from ``root``."""
     root = root or state_dir()
     now = time.time() if now is None else now
     herdr, version = check_herdr(probes)
-    return [
+    settings, config = check_config(root, config)
+    checks = [
         herdr,
-        *check_hcd(probes, root, now),
+        *check_daemon(probes, root, now),
         check_journal(root),
-        check_second_writer(probes, icc_root or icc_state_dir()),
-        check_ovis(probes, ovis_url or os.environ.get("HC_OVIS_URL") or OVIS_URL, version),
+        settings,
+        check_other_writers(probes, config.doctor.other_writers),
     ]
+    if config.doctor.ovis_url:
+        checks.append(check_ovis(probes, config.doctor.ovis_url, version))
+    return checks
 
 
 def render(checks: list[Check], width: int) -> str:
     fails = sum(c.level is Level.FAIL for c in checks)
     warns = sum(c.level is Level.WARN for c in checks)
     summary = "all checks pass" if not fails + warns else f"{fails} fail, {warns} warn"
-    out = [f"hc doctor: {summary}"]
+    out = [f"courier doctor: {summary}"]
     name_w = max(len(c.name) for c in checks)
     indent = " " * (4 + 1 + name_w + 1)
     for c in checks:

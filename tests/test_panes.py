@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from herdr_console import cli, display, panes
-from herdr_console.core.transport import HerdrError
+from herdr_courier import cli, display, panes
+from herdr_courier.core.transport import HerdrError
 
 
 class FakeWorkspace:
@@ -14,33 +14,33 @@ class FakeWorkspace:
             {"tab_id": "w1:t19", "label": "xrr-policy", "number": 41},
         ]
         self.panes = [
-            {"pane_id": "w1:p4Z", "tab_id": "w1:t2M", "label": "infra · hcd", "cwd": "D:\\"},
+            {"pane_id": "w1:p4Z", "tab_id": "w1:t2M", "label": "infra · courierd", "cwd": "C:\\"},
             {
                 "pane_id": "w1:p4W",
                 "tab_id": "w1:t2M",
                 "label": "infra · sentinel",
-                "cwd": "D:\\",
+                "cwd": "C:\\",
                 "focused": True,
             },
             {
                 "pane_id": "w1:p1S",
                 "tab_id": "w1:t8",
                 "label": "core · boss",
-                "cwd": "D:\\03_Develop\\NaNIsaac",
+                "cwd": "C:\\src\\team",
                 "agent": "claude",
             },
             {
                 "pane_id": "w1:p3H",
                 "tab_id": "w1:t19",
                 "label": "lane · xrr-policy",
-                "cwd": "D:\\03_Develop\\NaNIsaac\\_wt\\ReflectoLearn-fit-policy-x2d\\notebooks",
+                "cwd": "C:\\src\\team\\_wt\\analysis-fit-policy-x2d\\notebooks",
                 "agent": "claude",
             },
             {
                 "pane_id": "w1:p3J",
                 "tab_id": "w1:t19",
                 "label": "xrr-policy › sweep",
-                "cwd": "D:\\03_Develop",
+                "cwd": "C:\\src",
             },
         ]
 
@@ -56,7 +56,7 @@ class FakeWorkspace:
 
 @pytest.fixture(autouse=True)
 def dev(monkeypatch):
-    monkeypatch.setenv("DEV", "D:\\03_Develop")
+    monkeypatch.setenv("DEV", "C:\\src")
     monkeypatch.delenv("DATA", raising=False)
 
 
@@ -75,7 +75,7 @@ def test_roster_labels_pass():
     ("label", "tab", "expect"),
     [
         ("", "hc-lab", 'has no label: herdr pane rename w1:p9 "lane · hc-lab"'),
-        ("claude", "hc-lab", "does not start with core, isaac, lane or infra"),
+        ("claude", "hc-lab", "does not start with lane, core, isaac or infra"),
         ("lane - hc-lab", "hc-lab", "does not start with"),
         ("lane · HC_Lab", "hc-lab", "lowercase letters, digits and hyphens"),
         ("lane · boss", "hc-lab", 'herdr pane rename w1:p9 "lane · hc-lab"'),
@@ -97,9 +97,9 @@ def test_label_ok(label):
 
 
 def test_short_path(monkeypatch):
-    assert panes.short_path("D:\\03_Develop\\NaNIsaac") == "$DEV\\NaNIsaac"
-    assert panes.short_path("D:\\03_Develop") == "$DEV"
-    assert panes.short_path("D:\\03_DevelopX") == "D:\\03_DevelopX"
+    assert panes.short_path("C:\\src\\team") == "$DEV\\team"
+    assert panes.short_path("C:\\src") == "$DEV"
+    assert panes.short_path("C:\\srcX") == "C:\\srcX"
     monkeypatch.setenv("DATA", "E:\\data\\")
     assert panes.short_path("E:\\data\\runs") == "$DATA\\runs"
 

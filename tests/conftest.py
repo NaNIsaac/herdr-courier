@@ -2,8 +2,8 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from herdr_console.core.queue import Dispatcher
-from herdr_console.core.transport import HerdrError
+from herdr_courier.core.queue import Dispatcher
+from herdr_courier.core.transport import HerdrError
 
 RULE = "\x1b[0m\x1b[38;2;136;136;136m" + "─" * 40 + "\x1b[0m"
 DIM_GLYPH = "\x1b[0m\x1b[38;2;153;153;153m❯ \x1b[0m"
@@ -87,6 +87,14 @@ class FakeClock:
         return self.now
 
 
+@pytest.fixture(autouse=True)
+def state_dir(monkeypatch, tmp_path_factory):
+    """Keep every test away from the user's state directory and its config.toml."""
+    path = tmp_path_factory.mktemp("state")
+    monkeypatch.setenv("COURIER_STATE_DIR", str(path))
+    return path
+
+
 @pytest.fixture
 def herdr() -> FakeHerdr:
     return FakeHerdr()
@@ -107,7 +115,7 @@ def make_dispatcher(herdr, clock, tmp_path):
 
 @pytest.fixture
 def run(clock):
-    """Advance the fake clock in half-second ticks, like hcd's worker."""
+    """Advance the fake clock in half-second ticks, like courierd's worker."""
 
     def advance(dispatcher: Dispatcher, seconds: float) -> None:
         end = clock.now + seconds

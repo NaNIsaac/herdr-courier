@@ -1,6 +1,6 @@
-"""hc: queue prompts through hcd instead of writing into panes directly.
+"""courier: queue prompts through courierd instead of writing into panes directly.
 
-``hc send`` takes the same arguments as ``herdr agent prompt``. Without ``--wait`` it returns
+``courier send`` takes the same arguments as ``herdr agent prompt``. Without ``--wait`` it returns
 once the message is queued; with ``--wait`` it waits for delivery and then, like
 ``herdr agent prompt --wait``, for the agent to settle.
 """
@@ -16,7 +16,7 @@ import urllib.parse
 import uuid
 from typing import Any, NoReturn
 
-from . import agents, display, doctor, panes
+from . import agents, config, display, doctor, panes
 from .client import LostContact, Refused, Unavailable, request
 from .core.transport import CliHerdr, HerdrError
 
@@ -30,7 +30,7 @@ SEND_TIMEOUT = 30.0
 def manual_path(target: str, text: str | None) -> str:
     shown = "<text>" if text is None else json.dumps(text, ensure_ascii=False)
     return (
-        "Nothing was sent. Start hcd in a herdr shell pane, or deliver by hand:\n"
+        "Nothing was sent. Start courierd in a herdr shell pane, or deliver by hand:\n"
         f"  herdr agent read {target} --source recent --lines 12 --format ansi\n"
         "  # in the last input box, the text after the prompt glyph must be empty or dim\n"
         f"  herdr agent prompt {target} {shown}"
@@ -47,19 +47,21 @@ def call(method: str, path: str, body: dict[str, Any] | None = None, timeout: fl
 def fail(exc: Exception, body: dict[str, Any] | None) -> NoReturn:
     match exc:
         case Unavailable():
-            print(f"hc: dispatcher unavailable ({exc}).", file=sys.stderr)
+            print(f"courier: dispatcher unavailable ({exc}).", file=sys.stderr)
             body = body or {}
             print(manual_path(body.get("target", "<target>"), body.get("text")), file=sys.stderr)
             raise SystemExit(EXIT_UNAVAILABLE) from exc
         case LostContact():
-            print(f"hc: {exc}. It may have been applied; check hc status.", file=sys.stderr)
+            print(
+                f"courier: {exc}. It may have been applied; check courier status.", file=sys.stderr
+            )
         case _:
-            print(f"hc: {exc}", file=sys.stderr)
+            print(f"courier: {exc}", file=sys.stderr)
     raise SystemExit(EXIT_FAILED) from exc
 
 
 def default_source() -> str:
-    return os.environ.get("HC_SOURCE") or os.environ.get("HERDR_PANE_ID") or "unknown"
+    return os.environ.get("COURIER_SOURCE") or os.environ.get("HERDR_PANE_ID") or "unknown"
 
 
 def cmd_send(args: argparse.Namespace) -> int:
@@ -104,7 +106,7 @@ def cmd_send(args: argparse.Namespace) -> int:
 
 
 def render_status(reply: dict[str, Any], *, width: int, recent: int, now: float) -> list[str]:
-    """``hc status`` as lines of at most ``width`` cells, so a phone shows it without wrapping."""
+    """``courier status`` as lines of at most ``width`` cells, so a phone shows it without wrapping."""
     status, worker = reply["status"], reply.get("worker") or {}
     out: list[str] = []
     stale = (worker.get("seconds_since_tick") or 0) > 10
@@ -182,7 +184,10 @@ def cmd_status(args: argparse.Namespace) -> int:
 def cmd_hold(args: argparse.Namespace) -> int:
     body = {"target": args.target, "owner": args.owner, "reason": args.reason, "ttl": args.ttl}
     pane = call("POST", "hold", body)["pane_id"]
-    print(f"holding {pane} " + ("until hc release" if args.ttl is None else f"for {args.ttl:g} s"))
+    print(
+        f"holding {pane} "
+        + ("until courier release" if args.ttl is None else f"for {args.ttl:g} s")
+    )
     return 0
 
 
@@ -195,15 +200,15 @@ def cmd_agents(args: argparse.Namespace) -> int:
     try:
         reply = request("GET", "status")
     except Unavailable as exc:
-        dispatch, hcd = None, f"not running ({exc}); hc send would fail with status 3"
+        dispatch, courierd = None, f"not running ({exc}); courier send would fail with status 3"
     except (LostContact, Refused) as exc:
-        dispatch, hcd = None, f"error ({exc})"
+        dispatch, courierd = None, f"error ({exc})"
     else:
         dispatch = reply["status"]
         worker = reply.get("worker") or {}
         queued = sum(len(p["pending"]) for p in dispatch["panes"].values())
         held = sum(1 for p in dispatch["panes"].values() if p["hold"])
-        hcd = (
+        courierd = (
             f"running, {queued} queued, {held} held"
             if worker.get("alive")
             else "answers but its worker is not running; nothing is being sent"
@@ -211,20 +216,20 @@ def cmd_agents(args: argparse.Namespace) -> int:
     try:
         rows = agents.collect(CliHerdr(), dispatch)
     except HerdrError as exc:
-        print(f"hc: herdr did not answer ({exc})", file=sys.stderr)
+        print(f"courier: herdr did not answer ({exc})", file=sys.stderr)
         return EXIT_FAILED
     notes = agents.warnings(rows)
     if args.json:
         print(
             json.dumps(
-                {"hcd": hcd, "rows": [r.as_dict() for r in rows], "warnings": notes},
+                {"courierd": courierd, "rows": [r.as_dict() for r in rows], "warnings": notes},
                 ensure_ascii=False,
                 indent=2,
             )
         )
         return 0
     width = args.width or display.terminal_width()
-    print(agents.render(rows, notes, width=width, hcd=hcd, wide=args.wide))
+    print(agents.render(rows, notes, width=width, courierd=courierd, wide=args.wide))
     return 0
 
 
@@ -239,16 +244,21 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
 def cmd_panes(args: argparse.Namespace) -> int:
     try:
+        rule = config.load().panes
+    except config.ConfigError as exc:
+        print(f"courier: {exc}", file=sys.stderr)
+        return EXIT_FAILED
+    try:
         tabs = panes.collect(CliHerdr())
     except HerdrError as exc:
-        print(f"hc: herdr did not answer ({exc})", file=sys.stderr)
+        print(f"courier: herdr did not answer ({exc})", file=sys.stderr)
         return EXIT_FAILED
-    notes = panes.warnings(tabs)
+    notes = panes.warnings(tabs, rule)
     if args.json:
         payload = {"tabs": [t.as_dict() for t in tabs], "warnings": notes}
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
-    print(panes.render(tabs, notes, width=args.width or display.terminal_width()))
+    print(panes.render(tabs, notes, width=args.width or display.terminal_width(), rule=rule))
     return 0
 
 
@@ -259,7 +269,9 @@ def cmd_cancel(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="hc", description="Queue prompts through hcd.")
+    parser = argparse.ArgumentParser(
+        prog="courier", description="Queue prompts for herdr panes through courierd."
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("send", help="queue a prompt (same arguments as herdr agent prompt)")
@@ -290,13 +302,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("target")
     p.set_defaults(func=cmd_release)
 
-    p = sub.add_parser("agents", help="every pane with its tab, agent name, status and hcd queue")
+    p = sub.add_parser(
+        "agents", help="every pane with its tab, agent name, status and courierd queue"
+    )
     p.add_argument("--json", action="store_true")
     p.add_argument("--width", type=int, help="table width (default: the terminal, 62 if unknown)")
     p.add_argument("--wide", action="store_true", help="add the terminal title column")
     p.set_defaults(func=cmd_agents)
 
-    p = sub.add_parser("doctor", help="check herdr, hcd, its journal, a second writer and Ovis")
+    p = sub.add_parser(
+        "doctor", help="check herdr, courierd, its journal and config, other pane writers and Ovis"
+    )
     p.add_argument("--json", action="store_true")
     p.add_argument("--width", type=int, help="line width (default: the terminal, 62 if unknown)")
     p.set_defaults(func=cmd_doctor)

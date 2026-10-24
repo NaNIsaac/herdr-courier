@@ -1,7 +1,7 @@
 [project]
-name = "herdr-console"
+name = "herdr-courier"
 version = "0.1.0"
-description = "Safe terminal control for herdr: a prompt dispatcher that never types over a human's half-written input"
+description = "A prompt queue for herdr panes that never types over a human's half-written input"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -10,8 +10,10 @@ requires-python = ">=3.13"
 dependencies = []
 
 [project.scripts]
-hc = "herdr_console.cli:main"
-hcd = "herdr_console.daemon:main"
+courier = "herdr_courier.cli:main"
+courierd = "herdr_courier.daemon:main"
+hc = "herdr_courier.cli:main"
+hcd = "herdr_courier.daemon:main"
 
 [build-system]
 requires = ["uv_build>=0.11,<0.13"]
@@ -22,7 +24,7 @@ dev = ["pytest>=8"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: needs Windows, a live herdr session and HC_INTEGRATION=1"]
+markers = ["integration: needs Windows, a live herdr session and COURIER_INTEGRATION=1"]
 
 [tool.ruff]
 line-length = 100

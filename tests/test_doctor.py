@@ -6,10 +6,11 @@ import urllib.error
 
 import pytest
 
-from herdr_console import cli, display, doctor
-from herdr_console.client import Unavailable
-from herdr_console.core.transport import HerdrError
-from herdr_console.doctor import Level
+from herdr_courier import cli, display, doctor
+from herdr_courier.client import Unavailable
+from herdr_courier.config import Config, Doctor
+from herdr_courier.core.transport import HerdrError
+from herdr_courier.doctor import Level
 
 NOW = 1_800_000_000.0
 
@@ -27,7 +28,7 @@ class FakeProbes:
         self.version = "0.9.5"
         self.panes = [{"pane_id": "w1:p1"}, {"pane_id": "w1:p2"}]
         self.agents = [{"pane_id": "w1:p1", "agent_status": "idle"}]
-        self.hcd = status_reply()
+        self.daemon = status_reply()
         self.alive = {408}
         self.ovis = {
             "ok": True,
@@ -48,10 +49,10 @@ class FakeProbes:
     def agent_list(self):
         return self.agents
 
-    def hcd_status(self, root):
-        if isinstance(self.hcd, Exception):
-            raise self.hcd
-        return self.hcd
+    def daemon_status(self, root):
+        if isinstance(self.daemon, Exception):
+            raise self.daemon
+        return self.daemon
 
     def pid_alive(self, pid):
         return pid in self.alive
@@ -64,21 +65,35 @@ class FakeProbes:
 
 @pytest.fixture
 def roots(tmp_path):
-    root, icc = tmp_path / "hcd", tmp_path / "icc"
+    root, other = tmp_path / "courierd", tmp_path / "other"
     root.mkdir()
     (root / "endpoint.json").write_text(json.dumps({"port": 65499, "token": "t", "pid": 408}))
-    return root, icc
+    return root, other
 
 
-def run(probes, roots):
-    root, icc = roots
-    return {c.name: c for c in doctor.diagnose(probes, root=root, icc_root=icc, now=NOW)}
+def settings(other):
+    return Config(doctor=Doctor(other_writers=(str(other / "endpoint.json"),)))
+
+
+def run(probes, roots, config=None):
+    root, other = roots
+    config = config or settings(other)
+    return {c.name: c for c in doctor.diagnose(probes, root=root, config=config, now=NOW)}
 
 
 def test_healthy(roots):
     checks = run(FakeProbes(), roots)
     assert {c.level for c in checks.values()} == {Level.OK}
-    assert list(checks) == ["herdr", "hcd", "worker", "queue", "journal", "icc", "ovis"]
+    assert list(checks) == [
+        "herdr",
+        "courierd",
+        "worker",
+        "queue",
+        "journal",
+        "config",
+        "writers",
+        "ovis",
+    ]
     assert checks["herdr"].detail == "0.9.5; 2 panes, 1 agents"
 
 
@@ -100,30 +115,30 @@ def test_blocked_agent_is_a_warning(roots):
     assert run(probes, roots)["herdr"].level is Level.WARN
 
 
-def test_hcd_not_running(roots):
+def test_courierd_not_running(roots):
     (roots[0] / "endpoint.json").unlink()
     checks = run(FakeProbes(), roots)
-    assert checks["hcd"].level is Level.FAIL
+    assert checks["courierd"].level is Level.FAIL
     assert "worker" not in checks
-    assert checks["hcd"].fix == doctor.START_HCD
+    assert checks["courierd"].fix == doctor.START_DAEMON
 
 
-def test_stale_endpoint_and_hung_hcd(roots):
+def test_stale_endpoint_and_hung_courierd(roots):
     probes = FakeProbes()
-    probes.hcd = Unavailable("cannot reach hcd on port 65499")
+    probes.daemon = Unavailable("cannot reach courierd on port 65499")
     probes.alive = set()
-    assert "stale endpoint" in run(probes, roots)["hcd"].detail
+    assert "stale endpoint" in run(probes, roots)["courierd"].detail
     probes.alive = {408}
-    hung = run(probes, roots)["hcd"]
+    hung = run(probes, roots)["courierd"]
     assert hung.level is Level.FAIL
     assert hung.detail.startswith("pid 408 is alive but does not answer")
 
 
 def test_worker_stalled_or_erroring(roots):
     probes = FakeProbes()
-    probes.hcd = status_reply(seconds_since_tick=42.0)
+    probes.daemon = status_reply(seconds_since_tick=42.0)
     assert run(probes, roots)["worker"].level is Level.FAIL
-    probes.hcd = status_reply(errors=2, last_error="12:00:00 HerdrError('cli_timeout')")
+    probes.daemon = status_reply(errors=2, last_error="12:00:00 HerdrError('cli_timeout')")
     worker = run(probes, roots)["worker"]
     assert worker.level is Level.WARN
     assert "2 failed passes" in worker.detail
@@ -131,7 +146,7 @@ def test_worker_stalled_or_erroring(roots):
 
 def test_queue_problems(roots):
     probes = FakeProbes()
-    probes.hcd["status"] = {
+    probes.daemon["status"] = {
         "panes": {
             "w1:p1": {
                 "hold": {"seconds_left": None},
@@ -160,14 +175,32 @@ def test_journal_with_unreadable_lines(roots):
     assert "1 unreadable" in journal.detail
 
 
-def test_second_writer(roots):
-    _, icc = roots
-    (icc / "dispatch").mkdir(parents=True)
-    (icc / "dispatch" / "endpoint.json").write_text(json.dumps({"port": 8765, "pid": 7000}))
+def test_other_writer(roots):
+    _, other = roots
+    other.mkdir()
+    (other / "endpoint.json").write_text(json.dumps({"port": 8765, "pid": 7000}))
     probes = FakeProbes()
-    assert "stale endpoint" in run(probes, roots)["icc"].detail
+    assert "stale endpoint" in run(probes, roots)["writers"].detail
     probes.alive.add(7000)
-    assert run(probes, roots)["icc"].level is Level.FAIL
+    writers = run(probes, roots)["writers"]
+    assert writers.level is Level.FAIL
+    assert "pid 7000" in writers.detail
+
+
+def test_config_file_is_read_and_checked(roots):
+    root, _ = roots
+    checks = {c.name: c for c in doctor.diagnose(FakeProbes(), root=root, now=NOW)}
+    assert checks["config"].detail.startswith("built-in defaults")
+    (root / "config.toml").write_text('[doctor]\nother_writers = []\novis_url = ""\n')
+    checks = {c.name: c for c in doctor.diagnose(FakeProbes(), root=root, now=NOW)}
+    assert checks["config"].detail == "config.toml in the state directory"
+    assert checks["writers"].detail == "no other writers configured"
+    assert "ovis" not in checks
+    (root / "config.toml").write_text("[doctor]\novis = 1\n")
+    checks = {c.name: c for c in doctor.diagnose(FakeProbes(), root=root, now=NOW)}
+    assert checks["config"].level is Level.FAIL
+    assert "unknown key doctor.ovis" in checks["config"].detail
+    assert checks["ovis"].level is Level.OK
 
 
 def test_ovis(roots):
@@ -184,11 +217,13 @@ def test_render_fits_a_phone(roots):
     (roots[0] / "endpoint.json").unlink()
     probes = FakeProbes()
     probes.ovis = urllib.error.URLError(ConnectionRefusedError("refused " * 10))
-    text = doctor.render(doctor.diagnose(probes, root=roots[0], icc_root=roots[1], now=NOW), 62)
+    text = doctor.render(
+        doctor.diagnose(probes, root=roots[0], config=settings(roots[1]), now=NOW), 62
+    )
     lines = text.splitlines()
-    assert lines[0] == "hc doctor: 1 fail, 1 warn"
+    assert lines[0] == "courier doctor: 1 fail, 1 warn"
     assert max(display.cols(line) for line in lines) <= 62
-    assert any(line.lstrip().startswith("fix: start hcd") for line in lines)
+    assert any(line.lstrip().startswith("fix: start courierd") for line in lines)
 
 
 def test_cli_exit_code(monkeypatch, roots, capsys):
@@ -196,10 +231,10 @@ def test_cli_exit_code(monkeypatch, roots, capsys):
     real = doctor.diagnose
     monkeypatch.setattr(doctor, "LiveProbes", lambda: probes)
     monkeypatch.setattr(
-        doctor, "diagnose", lambda p: real(p, root=roots[0], icc_root=roots[1], now=NOW)
+        doctor, "diagnose", lambda p: real(p, root=roots[0], config=settings(roots[1]), now=NOW)
     )
     assert cli.main(["doctor"]) == 0
-    assert capsys.readouterr().out.startswith("hc doctor: all checks pass")
+    assert capsys.readouterr().out.startswith("courier doctor: all checks pass")
     probes.panes = HerdrError("cli_timeout", "slow")
     assert cli.main(["doctor", "--json"]) == cli.EXIT_FAILED
     assert json.loads(capsys.readouterr().out)[0]["level"] == "FAIL"

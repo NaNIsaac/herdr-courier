@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from herdr_console.core.inputline import LineState, classify, holds
+from herdr_courier.core.inputline import LineState, classify, holds
 
 DATA = Path(__file__).parent / "data"
 RULE = "\x1b[0m\x1b[38;2;136;136;136m" + "─" * 30 + "\x1b[0m"
@@ -12,7 +12,8 @@ def box(line: str) -> str:
     return f"output\r\n{RULE}\r\n{line}\r\n{RULE}\r\n  footer\r\n"
 
 
-# Captured from a Claude Code pane with `herdr pane read --source recent --format ansi`.
+# Input boxes captured from a Claude Code pane (third-party UI text, no conversation content)
+# with `herdr pane read --source recent --format ansi`; the typed text is test input.
 @pytest.mark.parametrize(
     ("name", "state", "text"),
     [

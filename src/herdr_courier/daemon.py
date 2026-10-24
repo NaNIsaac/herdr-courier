@@ -1,8 +1,8 @@
-"""hcd: the one process that writes prompts into herdr panes.
+"""courierd: the one process that writes prompts into herdr panes.
 
 Run it in a herdr shell pane, not in an agent's background shell, so it outlives agent sessions.
-It listens on 127.0.0.1 only, takes an OS lock on its state directory so a second hcd cannot
-replay the same journal, and writes an endpoint file (port, per-start token, pid) that hc reads.
+It listens on 127.0.0.1 only, takes an OS lock on its state directory so a second courierd cannot
+replay the same journal, and writes an endpoint file (port, per-start token, pid) that courier reads.
 One worker thread calls ``Dispatcher.tick``; it is the only writer to any pane.
 """
 
@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from .core.queue import Dispatcher, DispatchError
 from .core.transport import CliHerdr, PaneHerdr
-from .state import endpoint_path, journal_path, lock_path, state_dir
+from .state import adopt_old_state, endpoint_path, journal_path, lock_path, state_dir
 
 TICK = 0.5
 MAX_BODY = 64 * 1024
@@ -64,7 +64,7 @@ class InstanceLock:
         except OSError as exc:
             self._file.close()
             raise AlreadyRunning(
-                f"another hcd already dispatches from {path.parent}; stop it first"
+                f"another courierd already dispatches from {path.parent}; stop it first"
             ) from exc
 
     def release(self) -> None:
@@ -81,7 +81,7 @@ class InstanceLock:
 
 
 class DispatchService:
-    """Owns the dispatcher, the worker thread that is its only pane writer, and hc's token."""
+    """Owns the dispatcher, the worker thread that is its only pane writer, and courier's token."""
 
     def __init__(
         self,
@@ -324,7 +324,9 @@ class Server(ThreadingHTTPServer):
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="hcd", description="Prompt dispatcher for herdr panes.")
+    parser = argparse.ArgumentParser(
+        prog="courierd", description="Prompt dispatcher for herdr panes."
+    )
     parser.add_argument("--port", type=int, default=0, help="TCP port on 127.0.0.1 (0: any)")
     parser.add_argument("--tick", type=float, default=TICK, help="seconds between passes")
     parser.add_argument(
@@ -337,19 +339,30 @@ def main(argv: list[str] | None = None) -> int:
     if isinstance(sys.stdout, io.TextIOWrapper):
         sys.stdout.reconfigure(line_buffering=True, errors="replace")
 
+    try:
+        if old := adopt_old_state():
+            print(f"courierd: moved the state directory of herdr-console 0.1 from {old}")
+    except OSError as exc:
+        print(
+            f"courierd: cannot move the old state directory ({exc}); stop hcd 0.1 first",
+            file=sys.stderr,
+        )
+        return 1
     root = state_dir()
     try:
         # Taken before the journal is read, so a second instance never touches it.
         lock = InstanceLock(lock_path(root))
     except AlreadyRunning as exc:
-        print(f"hcd: {exc}", file=sys.stderr)
+        print(f"courierd: {exc}", file=sys.stderr)
         return 1
     herdr = PaneHerdr() if args.transport == "pane" else CliHerdr()
     service = DispatchService(Dispatcher(herdr, journal_path(root)), root, args.tick, lock)
     server = Server(service, args.port)
     port = server.server_address[1]
     service.start(port)
-    print(f"hcd pid {os.getpid()} on 127.0.0.1:{port}, transport {args.transport}, state {root}")
+    print(
+        f"courierd pid {os.getpid()} on 127.0.0.1:{port}, transport {args.transport}, state {root}"
+    )
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
@@ -357,7 +370,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         server.server_close()
         service.stop()
-        print("hcd stopped; queued items stay in the journal and resume on the next start")
+        print("courierd stopped; queued items stay in the journal and resume on the next start")
     return 0
 
 

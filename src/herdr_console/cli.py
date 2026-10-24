@@ -16,7 +16,7 @@ import urllib.parse
 import uuid
 from typing import Any, NoReturn
 
-from . import agents, display
+from . import agents, display, panes
 from .client import LostContact, Refused, Unavailable, request
 from .core.transport import CliHerdr, HerdrError
 
@@ -228,6 +228,21 @@ def cmd_agents(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_panes(args: argparse.Namespace) -> int:
+    try:
+        tabs = panes.collect(CliHerdr())
+    except HerdrError as exc:
+        print(f"hc: herdr did not answer ({exc})", file=sys.stderr)
+        return EXIT_FAILED
+    notes = panes.warnings(tabs)
+    if args.json:
+        payload = {"tabs": [t.as_dict() for t in tabs], "warnings": notes}
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    print(panes.render(tabs, notes, width=args.width or display.terminal_width()))
+    return 0
+
+
 def cmd_cancel(args: argparse.Namespace) -> int:
     item = call("POST", "cancel", {"id": args.id})["item"]
     print(f"cancelled {item['id']} to {item['target']}")
@@ -271,6 +286,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--width", type=int, help="table width (default: the terminal, 62 if unknown)")
     p.add_argument("--wide", action="store_true", help="add the terminal title column")
     p.set_defaults(func=cmd_agents)
+
+    p = sub.add_parser("panes", help="panes by tab with label and working directory")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--width", type=int, help="line width (default: the terminal, 62 if unknown)")
+    p.set_defaults(func=cmd_panes)
 
     p = sub.add_parser("cancel", help="drop a queued message")
     p.add_argument("id")

@@ -84,7 +84,8 @@ class CliHerdr:
         )
 
     def submit(self, pane_id: str, text: str) -> None:
-        _result(["agent", "prompt", pane_id, text])
+        # The reply is not needed; parsing it could only turn a delivered prompt into an error.
+        _run(["agent", "prompt", pane_id, text], 15.0)
 
 
 class PaneHerdr(CliHerdr):
@@ -95,5 +96,6 @@ class PaneHerdr(CliHerdr):
     """
 
     def submit(self, pane_id: str, text: str) -> None:
-        _result(["pane", "send-text", pane_id, text])
-        _result(["pane", "send-keys", pane_id, "enter"])
+        # Both commands print nothing on success.
+        _run(["pane", "send-text", pane_id, text], 15.0)
+        _run(["pane", "send-keys", pane_id, "enter"], 15.0)

@@ -212,3 +212,22 @@ def test_journal_records_each_transition(herdr, make_dispatcher, run, tmp_path):
     ]
     assert states[0] == "queued"
     assert states[-2:] == ["verifying", "sent"]
+
+
+def test_unexpected_submit_exception_fails_without_resend(herdr, make_dispatcher, run):
+    # A non-herdr exception after part of the message was written (seen when a transport
+    # parsed empty output as JSON) must not send the item back to the queue.
+    pane = herdr.add("w1:p1")
+    calls = []
+
+    def broken(pane_id, text):
+        calls.append(text)
+        pane.box = text
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    herdr.submit = broken
+    d = make_dispatcher()
+    item = d.enqueue("w1:p1", "[lane] report", source="t")
+    run(d, 20)
+    assert item.state is State.FAILED
+    assert calls == ["[lane] report"]

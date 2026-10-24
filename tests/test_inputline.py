@@ -70,3 +70,14 @@ def test_holds_detects_our_text_left_in_box():
     line = classify(box("❯ [lane] status report with   extra spaces"))
     assert holds(line, "[lane] status report with extra spaces")
     assert not holds(line, "something else entirely")
+
+
+def test_blank_rows_above_prompt_are_skipped():
+    screen = f"out\r\n{RULE}\r\n\r\n❯ half typed\r\n\r\n{RULE}\r\n"
+    line = classify(screen)
+    assert line.state is LineState.TYPED
+    assert line.text == "half typed"
+
+
+def test_box_of_blank_rows_only_is_unknown():
+    assert classify(f"{RULE}\r\n\r\n\r\n{RULE}\r\n").state is LineState.UNKNOWN

@@ -66,6 +66,9 @@ def classify(screen: str) -> InputLine:
     if len(rules) < 2:
         return InputLine(LineState.UNKNOWN, "", "no input box (fewer than two rules)")
     top, bottom = rules[-2], rules[-1]
+    # Blank rows under the top rule hold no input; some consoles redraw with one there.
+    while top + 1 < bottom and not plain[top + 1].strip():
+        top += 1
     body = lines[top + 1 : bottom]
     if not body or not plain[top + 1].lstrip().startswith(PROMPT):
         shown = " | ".join(plain[top + 1 : bottom])[:80]

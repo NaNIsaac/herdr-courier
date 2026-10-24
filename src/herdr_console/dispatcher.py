@@ -235,16 +235,17 @@ class Dispatcher:
                 return
         try:
             self.herdr.submit(pane_id, item.text)
-        except HerdrError as exc:
+        except Exception as exc:  # noqa: BLE001 - every failure here must end the item
             with self.lock:
                 item.attempts += 1
-                if exc.code in SUBMIT_RETRYABLE and item.attempts < MAX_ATTEMPTS:
+                code = exc.code if isinstance(exc, HerdrError) else None
+                if code in SUBMIT_RETRYABLE and item.attempts < MAX_ATTEMPTS:
                     item.retry_at = self.clock() + 2.0**item.attempts
                     self._set(item, State.WAITING, f"retry {item.attempts}: {exc}")
                 else:
                     # Anything else may have written part of the message; resending could
                     # duplicate it, so stop and report.
-                    self._finish(item, State.FAILED, f"submit failed: {exc}")
+                    self._finish(item, State.FAILED, f"submit failed: {exc!r}")
             return
         with self.lock:
             item.verify_until = self.clock() + VERIFY_SECONDS

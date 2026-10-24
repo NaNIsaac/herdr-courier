@@ -10,9 +10,16 @@ holds; this table joins tabs, panes, agents and courier serve's queue so the mis
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
-from .display import cols, fit, wrap
+from .display import cols, fit, paint, wrap
 
 NO_AGENT = "shell"
+# ANSI 16 colours only, so the palette of the terminal showing the pane (Termux, Ovis) decides the shades.
+STATUS_SGR = {"working": "32", "idle": "90", "done": "94", "blocked": "1;91"}
+NAME_SGR = "1"
+QUEUE_SGR = "33"
+SHELL_SGR = "2"
+HEADER_SGR = "4"
+WARNING_SGR = "33"
 
 
 class Workspace(Protocol):
@@ -105,8 +112,12 @@ def render(
     width: int,
     dispatcher: str,
     wide: bool = False,
+    color: bool = False,
 ) -> str:
-    """A table that fits a phone terminal; ``wide`` adds the terminal title column."""
+    """A table that fits a phone terminal; ``wide`` adds the terminal title column.
+
+    ``color`` adds SGR around cell text only, so the visible columns are the same as without it.
+    """
     width = max(width, 40)
     pane_w = max([len("pane"), *(cols(r.pane_id) for r in rows)])
     status_w = max([len("status"), *(cols(r.status) for r in rows)])
@@ -119,7 +130,16 @@ def render(
         tab_w = max(6, flexible // 3)
         agent_w = max(6, flexible // 3)
 
-    def line(mark: str, pane: str, tab: str, agent: str, status: str, queue_cell: str, title: str):
+    def line(
+        mark: str,
+        pane: str,
+        tab: str,
+        agent: str,
+        status: str,
+        queue_cell: str,
+        title: str,
+        sgr: list[str],
+    ) -> str:
         cells = [
             mark,
             fit(pane, pane_w),
@@ -128,14 +148,24 @@ def render(
             fit(status, status_w),
             fit(queue_cell, queue_w),
         ]
-        text = " ".join(cells)
         if wide:
-            text += " " + fit(title, max(0, width - cols(text) - 1))
-        return text.rstrip()
+            cells.append(fit(title, max(0, width - cols(" ".join(cells)) - 1)))
+        if color:
+            cells = [paint(cell, s) for cell, s in zip(cells, sgr, strict=False)]
+        return " ".join(cells).rstrip()
+
+    def row_sgr(row: Row) -> list[str]:
+        if row.status == NO_AGENT:
+            sgr = [SHELL_SGR] * 7
+        else:
+            sgr = ["", "", "", NAME_SGR, STATUS_SGR.get(row.status, ""), "", ""]
+        if row.queued or row.hold is not None:
+            sgr[5] = QUEUE_SGR
+        return sgr
 
     out = [
         *wrap(f"dispatcher: {dispatcher}", width, "", "  "),
-        line(" ", "pane", "tab", "agent", "status", "queue", "title"),
+        line(" ", "pane", "tab", "agent", "status", "queue", "title", [HEADER_SGR] * 7),
     ]
     for row in rows:
         out.append(
@@ -147,6 +177,7 @@ def render(
                 row.status,
                 _queue_cell(row),
                 row.title,
+                row_sgr(row),
             )
         )
     out.append(fit("* = focused on the herdr server (any client)", width).rstrip())
@@ -154,5 +185,6 @@ def render(
     if notes:
         out.append("")
         for note in notes:
-            out.extend(wrap(note, width, "! ", "  "))
+            wrapped = wrap(note, width, "! ", "  ")
+            out.extend(paint(w, WARNING_SGR) if color else w for w in wrapped)
     return "\n".join(out)

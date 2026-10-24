@@ -169,6 +169,11 @@ only the tab label, so it warns when a tab is not named after the agent it holds
 panes by tab with their label and working directory, and warns when a label breaks the naming
 rule in [Configuration](#configuration). Both fit a 62-column phone terminal.
 
+In a terminal, `agents` colours the status (working green, idle grey, done blue, blocked
+red), shows agent names in bold, waiting queues in yellow and shell panes dimmed. `NO_COLOR`
+or `--color=never` turns this off; `--color` keeps it when the output is not a terminal, which
+includes a herdr pane on Windows.
+
 ### Check that everything is alive
 
 ```sh
@@ -193,7 +198,7 @@ check fails. `status` shows every queue and hold and what the daemon last saw in
 | `courier hold TARGET [--ttl SECONDS] [--reason TEXT] [--owner NAME]` | stop the daemon from typing into a pane |
 | `courier release TARGET` | drop a hold |
 | `courier cancel ID` | drop a queued message |
-| `courier agents [--wide] [--json] [--width N]` | panes with tab, agent, status and queue |
+| `courier agents [--wide] [--json] [--width N] [--color[=WHEN]]` | panes with tab, agent, status and queue |
 | `courier panes [--json] [--width N]` | panes by tab with label and working directory |
 | `courier doctor [--json] [--width N]` | read-only health check |
 

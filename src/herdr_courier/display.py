@@ -1,10 +1,28 @@
 """Text sized by terminal cells, for output read on a phone (62 columns in Termux portrait)."""
 
+import os
 import shutil
 import unicodedata
+from typing import TextIO
 
 PHONE_WIDTH = 62
 ELLIPSIS = "…"
+COLOR_CHOICES = ("auto", "always", "never")
+
+
+def color_wanted(when: str, stream: TextIO) -> bool:
+    """``--color`` as in ls and grep; ``auto`` colours a terminal unless NO_COLOR is set (no-color.org)."""
+    if when != "auto":
+        return when == "always"
+    return not os.environ.get("NO_COLOR") and os.environ.get("TERM") != "dumb" and stream.isatty()
+
+
+def paint(cell: str, sgr: str) -> str:
+    """Wrap the text of a fitted cell in SGR and leave its padding outside, so columns stay aligned."""
+    body = cell.rstrip(" ")
+    if not sgr or not body:
+        return cell
+    return f"\x1b[{sgr}m{body}\x1b[0m{cell[len(body) :]}"
 
 
 def cols(text: str) -> int:

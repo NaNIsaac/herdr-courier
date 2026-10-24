@@ -167,6 +167,11 @@ courier panes
 묶어 라벨과 작업 폴더를 보여 주고, 라벨이 [설정](#설정)의 이름 규칙을 어기면 경고합니다. 둘 다
 62열 폰 터미널에 맞습니다.
 
+터미널에서 `agents`는 상태에 색을 입히고(working 초록, idle 회색, done 파랑, blocked 빨강),
+에이전트 이름은 굵게, 대기 중인 큐는 노랑, shell pane은 흐리게 보여 줍니다. `NO_COLOR`나
+`--color=never`로 끄고, 출력이 터미널이 아닐 때도 색을 원하면 `--color`를 붙입니다. Windows의
+herdr pane도 터미널로 보이지 않으므로 거기서는 `--color`가 필요합니다.
+
 ### 모두 살아 있는지 확인
 
 ```sh
@@ -191,7 +196,7 @@ hold, 지난 한 시간의 실패, journal, 설정 파일, pane에 입력하는 
 | `courier hold TARGET [--ttl SECONDS] [--reason TEXT] [--owner NAME]` | 데몬이 그 pane에 입력하지 못하게 함 |
 | `courier release TARGET` | hold 해제 |
 | `courier cancel ID` | 큐의 메시지 삭제 |
-| `courier agents [--wide] [--json] [--width N]` | pane별 탭, 에이전트, 상태, 큐 |
+| `courier agents [--wide] [--json] [--width N] [--color[=WHEN]]` | pane별 탭, 에이전트, 상태, 큐 |
 | `courier panes [--json] [--width N]` | 탭별 pane과 라벨, 작업 폴더 |
 | `courier doctor [--json] [--width N]` | 읽기 전용 상태 점검 |
 

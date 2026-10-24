@@ -169,7 +169,8 @@ def render(
                 row.title,
             )
         )
-    out.append("* focused on the herdr server (last pane any client selected); shell = no agent")
+    out.append(_fit("* = focused on the herdr server (any client)", width).rstrip())
+    out.append(_fit("shell = no agent in that pane", width).rstrip())
     if notes:
         out.append("")
         out.extend(f"! {n}" for n in notes)

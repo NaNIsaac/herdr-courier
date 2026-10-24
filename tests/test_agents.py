@@ -92,7 +92,7 @@ def test_render_fits_a_phone_width():
     lines = text.splitlines()
     assert lines[0] == "hcd: running, 2 queued, 1 held"
     table = lines[1:5]
-    assert all(len(line) <= 62 for line in table)
+    assert all(agents._cols(line) <= 62 for line in lines)
     assert table[2].startswith("* w1:p4E")
     assert "q2 hold" in table[2]
     assert table[3].split()[-2:] == ["shell", "-"]

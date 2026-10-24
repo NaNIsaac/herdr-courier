@@ -16,7 +16,7 @@ import urllib.parse
 import uuid
 from typing import Any, NoReturn
 
-from . import agents
+from . import agents, display, panes
 from .client import LostContact, Refused, Unavailable, request
 from .core.transport import CliHerdr, HerdrError
 
@@ -103,9 +103,67 @@ def cmd_send(args: argparse.Namespace) -> int:
     return subprocess.run(wait, check=False).returncode
 
 
-def preview(text: str, width: int = 70) -> str:
-    flat = " ".join(text.split())
-    return flat if len(flat) <= width else flat[: width - 1] + "…"
+def render_status(reply: dict[str, Any], *, width: int, recent: int, now: float) -> list[str]:
+    """``hc status`` as lines of at most ``width`` cells, so a phone shows it without wrapping."""
+    status, worker = reply["status"], reply.get("worker") or {}
+    out: list[str] = []
+    stale = (worker.get("seconds_since_tick") or 0) > 10
+    if not worker.get("alive") or stale:
+        out += display.wrap(
+            f"WARNING: dispatcher worker is not running (alive={worker.get('alive')}, "
+            f"last tick {worker.get('seconds_since_tick')} s ago); queued messages will not go out",
+            width,
+            "",
+            "  ",
+        )
+    if worker.get("last_error"):
+        out += display.wrap(
+            f"last worker error ({worker.get('errors')} so far): {worker['last_error']}",
+            width,
+            "",
+            "  ",
+        )
+    panes = status["panes"]
+    if not any(v["pending"] or v["hold"] for v in panes.values()):
+        out.append("no queued messages or holds")
+    for pane_id, info in panes.items():
+        hold = info["hold"]
+        if hold is None:
+            out.append(pane_id)
+        else:
+            left = "" if hold["seconds_left"] is None else f", {hold['seconds_left']} s left"
+            again = ", restored after restart" if hold.get("restored") else ""
+            out += display.wrap(
+                f"HOLD {hold['reason']} ({hold['owner']}{left}{again})",
+                width,
+                f"{pane_id}  ",
+                "    ",
+            )
+        if info["observed"]:
+            out += display.wrap(info["observed"], width, "  observed: ", "    ")
+        for item in info["pending"]:
+            who = "human " if item["human"] else ""
+            out += display.wrap(
+                f"{who}from {item['source']}: {item['reason']}",
+                width,
+                f"  {item['id']} {item['state']:9} {int(now - item['created']):4d}s ",
+                "      ",
+            )
+            out.append("      " + display.clip(item["text"], width - 6))
+    if status["recent"]:
+        out.append("recent:")
+        for item in status["recent"][-recent:]:
+            stamp = time.strftime("%H:%M:%S", time.localtime(item["updated"]))
+            tries = f" (attempts {item['attempts']})" if item["attempts"] else ""
+            prefix = f"  {stamp} {item['id']} {item['state']:9} "
+            detail = f"{item['target']}: {item['reason']}{tries}"
+            # A delivered item's reason only says how delivery was confirmed; one line each keeps
+            # the log short on a phone. Any other outcome is kept whole, since its reason is the point.
+            if item["state"] == "sent":
+                out.append(display.fit(prefix + detail, width).rstrip())
+            else:
+                out += display.wrap(detail, width, prefix, "    ")
+    return out
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -113,47 +171,11 @@ def cmd_status(args: argparse.Namespace) -> int:
         "status" if not args.target else "status?" + urllib.parse.urlencode({"target": args.target})
     )
     reply = call("GET", path)
-    status, worker = reply["status"], reply.get("worker") or {}
     if args.json:
         print(json.dumps(reply, ensure_ascii=False, indent=2))
         return 0
-    stale = (worker.get("seconds_since_tick") or 0) > 10
-    if not worker.get("alive") or stale:
-        print(
-            f"WARNING: dispatcher worker is not running (alive={worker.get('alive')}, "
-            f"last tick {worker.get('seconds_since_tick')} s ago); queued messages will not go out"
-        )
-    if worker.get("last_error"):
-        print(f"last worker error ({worker.get('errors')} so far): {worker['last_error']}")
-    now = time.time()
-    panes = status["panes"]
-    if not any(v["pending"] or v["hold"] for v in panes.values()):
-        print("no queued messages or holds")
-    for pane_id, info in panes.items():
-        hold = info["hold"]
-        line = pane_id
-        if hold is not None:
-            left = "" if hold["seconds_left"] is None else f", {hold['seconds_left']} s left"
-            again = ", restored after restart" if hold.get("restored") else ""
-            line += f"  HOLD {hold['reason']} ({hold['owner']}{left}{again})"
-        print(line)
-        if info["observed"]:
-            print(f"  observed: {info['observed']}")
-        for item in info["pending"]:
-            who = "human " if item["human"] else ""
-            print(
-                f"  {item['id']} {item['state']:9} {int(now - item['created']):4d}s "
-                f"{who}from {item['source']}: {item['reason']}"
-            )
-            print(f"      {preview(item['text'])}")
-    if status["recent"]:
-        print("recent:")
-        for item in status["recent"][-args.recent :]:
-            stamp = time.strftime("%H:%M:%S", time.localtime(item["updated"]))
-            tries = f" (attempts {item['attempts']})" if item["attempts"] else ""
-            print(
-                f"  {stamp} {item['id']} {item['state']:9} {item['target']}: {item['reason']}{tries}"
-            )
+    width = args.width or display.terminal_width()
+    print("\n".join(render_status(reply, width=width, recent=args.recent, now=time.time())))
     return 0
 
 
@@ -201,8 +223,23 @@ def cmd_agents(args: argparse.Namespace) -> int:
             )
         )
         return 0
-    width = args.width or agents.terminal_width()
+    width = args.width or display.terminal_width()
     print(agents.render(rows, notes, width=width, hcd=hcd, wide=args.wide))
+    return 0
+
+
+def cmd_panes(args: argparse.Namespace) -> int:
+    try:
+        tabs = panes.collect(CliHerdr())
+    except HerdrError as exc:
+        print(f"hc: herdr did not answer ({exc})", file=sys.stderr)
+        return EXIT_FAILED
+    notes = panes.warnings(tabs)
+    if args.json:
+        payload = {"tabs": [t.as_dict() for t in tabs], "warnings": notes}
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+    print(panes.render(tabs, notes, width=args.width or display.terminal_width()))
     return 0
 
 
@@ -230,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("target", nargs="?")
     p.add_argument("--json", action="store_true")
     p.add_argument("--recent", type=int, default=10, help="finished items to show")
+    p.add_argument("--width", type=int, help="line width (default: the terminal, 62 if unknown)")
     p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("hold", help="keep the dispatcher from writing into a pane")
@@ -248,6 +286,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--width", type=int, help="table width (default: the terminal, 62 if unknown)")
     p.add_argument("--wide", action="store_true", help="add the terminal title column")
     p.set_defaults(func=cmd_agents)
+
+    p = sub.add_parser("panes", help="panes by tab with label and working directory")
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--width", type=int, help="line width (default: the terminal, 62 if unknown)")
+    p.set_defaults(func=cmd_panes)
 
     p = sub.add_parser("cancel", help="drop a queued message")
     p.add_argument("id")

@@ -1,6 +1,6 @@
 import json
 
-from herdr_console import agents, cli
+from herdr_console import agents, cli, display
 
 
 class FakeWorkspace:
@@ -92,7 +92,7 @@ def test_render_fits_a_phone_width():
     lines = text.splitlines()
     assert lines[0] == "hcd: running, 2 queued, 1 held"
     table = lines[1:5]
-    assert all(agents._cols(line) <= 62 for line in lines)
+    assert all(display.cols(line) <= 62 for line in lines)
     assert table[2].startswith("* w1:p4E")
     assert "q2 hold" in table[2]
     assert table[3].split()[-2:] == ["shell", "-"]
@@ -148,16 +148,16 @@ def test_korean_labels_keep_columns_aligned():
     rows = agents.collect(ws, None)
     lines = agents.render(rows, [], width=62, hcd="not running").splitlines()[1:5]
     status_col = lines[0].index("status")
-    assert all(agents._cols(line[: line.index(" " * 1, status_col - 1)]) <= 62 for line in lines)
-    assert all(agents._cols(line) <= 62 for line in lines)
+    assert all(display.cols(line[: line.index(" " * 1, status_col - 1)]) <= 62 for line in lines)
+    assert all(display.cols(line) <= 62 for line in lines)
     starts = [
-        agents._cols(line[: line.index(r.status)]) for line, r in zip(lines[1:], rows, strict=True)
+        display.cols(line[: line.index(r.status)]) for line, r in zip(lines[1:], rows, strict=True)
     ]
     assert len(set(starts)) == 1
 
 
 def test_fit_truncates_wide_characters_by_display_width():
-    assert agents._cols("비서") == 4
-    assert agents._fit("비서", 6) == "비서  "
-    assert agents._fit("비서실장", 5) == "비서…"
-    assert agents._cols(agents._fit("비서실장", 5)) == 5
+    assert display.cols("비서") == 4
+    assert display.fit("비서", 6) == "비서  "
+    assert display.fit("비서실장", 5) == "비서…"
+    assert display.cols(display.fit("비서실장", 5)) == 5

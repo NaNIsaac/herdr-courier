@@ -27,6 +27,9 @@ hc hold boss --reason "typing on the phone" --ttl 600
 hc release boss
 ```
 
+`hc status` wraps to the terminal width (62 columns when it cannot tell; `--width` sets it), so a
+phone shows every line whole. Delivered items in its recent log take one line each; failures wrap.
+
 `hc agents` needs no hcd. It lists every pane with its tab label, live agent name, status and
 hcd queue, sized for a phone terminal, and warns when a tab is not named after the agent it holds.
 herdr's mobile layout (62-column Termux screens fall under the default `ui.mobile_width_threshold`
@@ -37,6 +40,17 @@ what a phone user goes by.
 hc agents            # table for the current terminal width
 hc agents --wide     # adds the terminal title column
 hc agents --json
+```
+
+`hc panes` lays the workspace out by tab: each pane's label and working directory (`$DEV`,
+`$DATA` and `~` spelled out, long paths cut from the left). It warns when a pane label breaks the
+team's naming rule: `core`, `isaac` and `lane` panes are `<prefix> · <tab>`, `infra` panes
+`infra · <process>`, and a worker a lane starts `<tab> › <task>`; each warning carries the
+`herdr pane rename` command that fixes it.
+
+```sh
+hc panes
+hc panes --json
 ```
 
 Only one `hcd` runs per state directory; a second one exits. If `hcd` is not running, `hc send` exits with status 3 and prints the manual path:

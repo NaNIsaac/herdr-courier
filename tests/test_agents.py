@@ -150,7 +150,9 @@ def test_korean_labels_keep_columns_aligned():
     status_col = lines[0].index("status")
     assert all(agents._cols(line[: line.index(" " * 1, status_col - 1)]) <= 62 for line in lines)
     assert all(agents._cols(line) <= 62 for line in lines)
-    starts = [agents._cols(line[: line.index(r.status)]) for line, r in zip(lines[1:], rows, strict=True)]
+    starts = [
+        agents._cols(line[: line.index(r.status)]) for line, r in zip(lines[1:], rows, strict=True)
+    ]
     assert len(set(starts)) == 1
 
 

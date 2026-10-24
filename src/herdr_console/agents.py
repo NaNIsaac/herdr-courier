@@ -112,6 +112,23 @@ def _fit(text: str, width: int) -> str:
     return "".join(out) + ELLIPSIS + " " * (width - 1 - used)
 
 
+def _wrap(text: str, width: int, first: str, rest: str) -> list[str]:
+    """Greedy word wrap by display columns; textwrap counts code points, not cells."""
+    lines: list[str] = []
+    current, prefix = "", first
+    for word in text.split():
+        candidate = f"{current} {word}" if current else prefix + word
+        if current and _cols(candidate) > width:
+            lines.append(current)
+            prefix = rest
+            current = prefix + word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
+
+
 def _hcd_cell(row: Row) -> str:
     parts = []
     if row.queued:
@@ -173,7 +190,8 @@ def render(
     out.append(_fit("shell = no agent in that pane", width).rstrip())
     if notes:
         out.append("")
-        out.extend(f"! {n}" for n in notes)
+        for note in notes:
+            out.extend(_wrap(note, width, "! ", "  "))
     return "\n".join(out)
 
 

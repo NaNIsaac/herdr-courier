@@ -65,6 +65,12 @@ class CliHerdr:
     def agent_list(self) -> list[dict[str, Any]]:
         return _result(["agent", "list"])["agents"]
 
+    def tab_list(self) -> list[dict[str, Any]]:
+        return _result(["tab", "list"])["tabs"]
+
+    def pane_list(self) -> list[dict[str, Any]]:
+        return _result(["pane", "list"])["panes"]
+
     def read_ansi(self, pane_id: str, lines: int = 12) -> str:
         # "recent" is anchored to the bottom of the buffer; "visible" follows a scrolled
         # viewport, and "detection" drops SGR, which hides dim placeholders.

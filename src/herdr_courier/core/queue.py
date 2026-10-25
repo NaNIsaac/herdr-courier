@@ -21,6 +21,8 @@ from .transport import Herdr, HerdrError
 VERIFY_SECONDS = 5.0
 MAX_ATTEMPTS = 5
 KEEP_FINISHED = 200
+# Each restart closes one journal generation; the older ones are the only delivery history.
+JOURNAL_KEEP = 10
 # herdr rejects these before writing any byte, so a retry cannot duplicate a message.
 SUBMIT_RETRYABLE = frozenset({"agent_blocked", "agent_not_ready"})
 TARGET_GONE = frozenset({"agent_not_found", "pane_not_found"})
@@ -444,6 +446,22 @@ class Dispatcher:
         with self.journal.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+    def _close_generation(self) -> None:
+        """Rename the journal to ``<stem>.<UTC stamp>.jsonl`` and keep the newest JOURNAL_KEEP.
+
+        A ``journal.prev.jsonl`` left by 0.2.0 does not match the stamp pattern and stays.
+        """
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        stem = self.journal.stem
+        dest = self.journal.with_name(f"{stem}.{stamp}.jsonl")
+        n = 1
+        while dest.exists():
+            dest = self.journal.with_name(f"{stem}.{stamp}-{n}.jsonl")
+            n += 1
+        self.journal.replace(dest)
+        for old in sorted(self.journal.parent.glob(f"{stem}.[0-9]*.jsonl"))[:-JOURNAL_KEEP]:
+            old.unlink(missing_ok=True)
+
     def _replay(self) -> None:
         """Rebuild pending items and holds after a restart and compact the journal."""
         if not self.journal.exists():
@@ -473,7 +491,7 @@ class Dispatcher:
         pending = sorted(
             (i for i in items.values() if i.state not in FINAL), key=lambda i: i.created
         )
-        self.journal.replace(self.journal.with_suffix(".prev.jsonl"))
+        self._close_generation()
         now_wall = time.time()
         for pane_id, entry in holds.items():
             until_wall = entry.get("until_wall")

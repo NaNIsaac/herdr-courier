@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Each `courier serve` start keeps the previous journal as `journal.<UTC time>.jsonl` and the
+  newest 10 of them, instead of overwriting `journal.prev.jsonl`, so delivery history survives
+  more than one restart. An existing `journal.prev.jsonl` is left in place.
+
 ## 0.2.0
 
 - Renamed from herdr-console: the package is `herdr-courier`, the module `herdr_courier`, the

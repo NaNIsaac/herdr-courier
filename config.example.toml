@@ -23,5 +23,13 @@ path_variables = ["DEV", "DATA"]
 # doctor fails while one of those processes is alive, since two writers can interleave. The
 # default is isaac-control-center's in-process dispatcher.
 other_writers = ["~/.isaac-control-center/dispatch/endpoint.json"]
-# Ovis health route; "" skips the check.
-ovis_url = "http://127.0.0.1:7317"
+
+[ovis]
+# Ovis, the herdr browser and phone client; "" means there is none, and courier doctor skips it.
+url = "http://127.0.0.1:7317"
+# Agents a person also writes to through Ovis chat. While Ovis answers at url, a message for one
+# of them waits for the end of the agent's turn and then for its state to stay unchanged for
+# settle seconds, so a message queued in Ovis during the turn goes first. Ovis sends that message
+# when the turn ends and leaves it unsent in the input box if another turn starts first.
+panes = ["secretary"]
+settle = 3.0

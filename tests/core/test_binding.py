@@ -144,3 +144,27 @@ def test_a_name_moved_while_queued_does_not_redirect_the_message(herdr, bound, r
     assert item.state is State.FAILED
     assert item.reason == "identity_changed: session s2 is not s1"
     assert first.submit_calls == second.submit_calls == 0
+
+
+def test_the_between_turns_rule_and_the_terminal_proof_apply_together(herdr, clock, tmp_path, run):
+    pane = herdr.add("w1:p1", "secretary", session=None, terminal="term_a1")
+    d = Dispatcher(
+        herdr,
+        tmp_path / "journal.jsonl",
+        clock=clock,
+        log=lambda _: None,
+        settle_for=lambda name: 3.0 if name == "secretary" else None,
+        server=A,
+    )
+    first = d.enqueue("secretary", "first", source="t")
+    run(d, 2)
+    assert first.state is State.WAITING
+    assert first.reason.startswith("settle:")
+    run(d, 3)
+    assert first.state is State.SENT
+    second = d.enqueue("secretary", "second", source="t")
+    pane.terminal = "term_b7"
+    run(d, 5)
+    assert second.state is State.FAILED
+    assert second.reason == "identity_changed: terminal term_b7 is not term_a1"
+    assert pane.submitted == ["first"]

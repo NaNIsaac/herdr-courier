@@ -432,6 +432,13 @@ def test_hcd_is_refused_like_courier_serve_while_one_runs(tmp_path, monkeypatch)
     first.release()
 
 
+def test_serve_refuses_a_broken_config_and_frees_the_lock(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COURIER_STATE_DIR", str(tmp_path))
+    (tmp_path / "config.toml").write_text('[doctor]\novis_url = ""\n', encoding="utf-8")
+    assert cli.serve_main(["--port", "0"]) == 1
+    assert "unknown key doctor.ovis_url" in capsys.readouterr().err
+
+
 A_SOCK = os.path.join("herdr", "herdr.sock")
 B_SOCK = os.path.join("herdr", "sessions", "lab", "herdr.sock")
 

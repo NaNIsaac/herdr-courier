@@ -9,6 +9,7 @@ import math
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -75,6 +76,8 @@ class Hold:
 @dataclass
 class PaneWatch:
     empty_since: float | None = None
+    state: tuple[str, int | None] | None = None
+    state_since: float | None = None
     last: str = ""
 
 
@@ -94,14 +97,18 @@ class Dispatcher:
         *,
         clock=time.monotonic,
         log=print,
+        settle_for: Callable[[str | None], float | None] | None = None,
         server: str | None = None,
     ) -> None:
-        """``server`` is the herdr socket every call of ``herdr`` reaches; the journal records it
+        """``settle_for`` maps an agent name to its between-turns settle time, or None (gate).
+
+        ``server`` is the herdr socket every call of ``herdr`` reaches; the journal records it
         so that queued work is never replayed against another server's pane ids."""
         self.herdr = herdr
         self.journal = journal
         self.clock = clock
         self.log = log
+        self.settle_for = settle_for
         self.server = server
         self.lock = threading.Condition()
         self.items: dict[str, Item] = {}
@@ -260,6 +267,8 @@ class Dispatcher:
         obs = self._observe(item)
         if obs is None:
             return
+        # Outside the lock: it may ask Ovis whether it is running.
+        settle = None if self.settle_for is None else self.settle_for(obs.name)
         with self.lock:
             if item.state in FINAL:
                 return
@@ -273,6 +282,8 @@ class Dispatcher:
                 session=item.session,
                 hold=self._hold_reason(pane_id, now),
                 empty_for=self._empty_for(pane_id, obs.line, now),
+                settle=settle,
+                settled_for=self._settled_for(pane_id, obs, now),
                 terminal=item.terminal,
             )
             if verdict.fatal:
@@ -295,6 +306,8 @@ class Dispatcher:
                 session=item.session,
                 hold=self._hold_reason(pane_id, now),
                 empty_for=math.inf if final.line.state is LineState.EMPTY else None,
+                settle=settle,
+                settled_for=self._settled_for(pane_id, final, now),
                 terminal=item.terminal,
             )
             if verdict.fatal:
@@ -363,6 +376,8 @@ class Dispatcher:
             session=(agent.get("agent_session") or {}).get("value"),
             focused=bool(agent.get("focused")),
             line=line,
+            name=agent.get("name"),
+            state_seq=agent.get("state_change_seq"),
             terminal=agent.get("terminal_id"),
         )
         with self.lock:
@@ -381,6 +396,12 @@ class Dispatcher:
         if watch.empty_since is None:
             watch.empty_since = now
         return now - watch.empty_since
+
+    def _settled_for(self, pane_id: str, obs: Observation, now: float) -> float:
+        watch = self.watch.setdefault(pane_id, PaneWatch())
+        if watch.state != obs.state or watch.state_since is None:
+            watch.state, watch.state_since = obs.state, now
+        return now - watch.state_since
 
     def _hold_reason(self, pane_id: str, now: float) -> str | None:
         hold = self.holds.get(pane_id)

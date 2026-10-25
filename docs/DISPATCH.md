@@ -11,6 +11,13 @@ People type in Ovis (the herdr browser and phone client) or in the herdr TUI. Ov
 person's draft in the browser and checks the box itself before sending. The dispatcher covers
 the other side: agents and scripts, through `courier send`.
 
+Ovis also queues a chat message written during a turn and sends it when the turn ends. That send
+pastes, waits 120 ms and gives up before Enter if the agent has started another turn by then,
+leaving the paste unsent in the box (Ovis 0.4.14, `server/core/pending.ts`). A prompt the
+dispatcher delivered during the same turn starts that next turn: Claude Code queues it and runs it
+as soon as the turn ends. Ovis tells no other program which panes hold such messages, so for the
+agents in `ovis.panes` the dispatcher writes only between turns (condition 5).
+
 ## Layout
 
 ```text
@@ -25,6 +32,7 @@ src/herdr_courier/
   agents.py           courier agents: panes joined with tabs, agent names and the queue
   panes.py            courier panes: panes by tab, labels checked against a naming rule
   doctor.py           courier doctor: read-only checks of herdr, courier serve and its neighbours
+  ovis.py             whether Ovis answers, and the between-turns rule for `ovis.panes`
   defaults.py         built-in settings; config.toml in the state directory overrides them
   config.py           reads and validates config.toml
   state.py            state directory: journal, lock, endpoint file, config
@@ -101,6 +109,12 @@ All of these, observed again right before writing (a second `agent get` and box 
    with no session is tied to the pane's `terminal_id` instead and fails when the pane has a new
    terminal (the pane or the server restarted). Names are resolved once, when the message is
    queued: a name that moves to another pane does not take the message along.
+5. For an agent named in `ovis.panes`, while Ovis answers its health route (asked at most every
+   30 s): the agent is not `working`, and its state (status and herdr's `state_change_seq`) has
+   not changed for `ovis.settle` seconds, 3 by default. A queued Ovis message goes out within
+   that time after the turn ends, starting a new turn that this message then waits out. 3 s
+   outlasts courier's own measured write-to-`working` time (p95 0.96 s, max 1.69 s over 400 sends)
+   plus Ovis' fixed 0.42 s of waits. Without Ovis, or for other agents, nothing changes.
 
 Right before writing, the item is journalled as `submitting` while the queue lock is held. From
 then on it is never written again: a cancel is refused, and if the process dies the next start

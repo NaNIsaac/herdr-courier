@@ -108,7 +108,8 @@ ok   journal    empty (nothing queued since courier serve
                 started)
 ok   config     built-in defaults (no config.toml)
 ok   writers    no other dispatcher running
-ok   ovis       ok, revision d5a35b7, sees herdr 0.9.5
+ok   ovis       ok, revision d5a35b7, sees herdr 0.9.5;
+                between turns only: secretary
 ```
 
 pane 목록입니다(일부 행은 생략). `courier agents --json`은 같은 행을 JSON으로 출력합니다.
@@ -133,6 +134,9 @@ shell = no agent in that pane
 - `courier send`로 보낸 메시지만 큐에 들어갑니다. `herdr agent prompt`를 직접 부르는 프로그램은
   여전히 입력 중인 글 위에 쓸 수 있습니다.
 - 상태 폴더 하나에 `courier serve` 하나, PC 한 대 안에서만 동작합니다. 127.0.0.1에서만 받습니다.
+- Ovis 채팅에서 대기 중인 메시지는 courier가 볼 수 없습니다. Ovis가 다른 프로그램에 알려 주지 않기
+  때문입니다. 대신 `ovis.panes`의 에이전트에게는 턴이 끝날 때까지 기다렸다가 보내므로, 턴이 길면 그만큼
+  늦게 갑니다.
 - 시작할 때 herdr CLI가 닿는 herdr 서버(`HERDR_SOCKET_PATH`, 없으면 기본 세션)에만 전달하고, 다른 herdr
   서버의 pane에서 온 `courier send`·`hold`·`release`는 거부합니다. 다른 서버에는 따로
   `COURIER_STATE_DIR`을 준 `courier serve`가 하나 더 필요합니다.
@@ -247,7 +251,9 @@ herdr agent prompt boss "[lane] status report"
 | `panes.named_freely` | `["infra"]` | 아무 이름이나 되는 접두어. 두 목록이 모두 `[]`이면 검사하지 않음 |
 | `panes.path_variables` | `["DEV", "DATA"]` | 이 변수 아래의 작업 폴더는 `$DEV\...`로 표시 |
 | `doctor.other_writers` | `["~/.isaac-control-center/dispatch/endpoint.json"]` | pane에 입력하는 다른 프로그램의 endpoint 파일 |
-| `doctor.ovis_url` | `"http://127.0.0.1:7317"` | Ovis 상태 점검. `""`이면 건너뜀 |
+| `ovis.url` | `"http://127.0.0.1:7317"` | Ovis 상태 경로. `""`이면 Ovis 없음 |
+| `ovis.panes` | `["secretary"]` | Ovis가 응답하는 동안 이 에이전트에게 가는 메시지는 턴 사이에만 보냄 |
+| `ovis.settle` | `3.0` | 턴이 끝난 뒤 에이전트 상태가 이 초 동안 그대로여야 그런 메시지를 보냄 |
 
 ## 동작 방식
 

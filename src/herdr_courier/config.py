@@ -25,17 +25,24 @@ class Panes:
 @dataclass(frozen=True)
 class Doctor:
     other_writers: tuple[str, ...] = defaults.OTHER_WRITERS
-    ovis_url: str = defaults.OVIS_URL
+
+
+@dataclass(frozen=True)
+class Ovis:
+    url: str = defaults.OVIS_URL
+    panes: tuple[str, ...] = defaults.OVIS_PANES
+    settle: float = defaults.OVIS_SETTLE
 
 
 @dataclass(frozen=True)
 class Config:
     panes: Panes = Panes()
     doctor: Doctor = Doctor()
+    ovis: Ovis = Ovis()
     path: Path | None = None
 
 
-SECTIONS = {"panes": Panes, "doctor": Doctor}
+SECTIONS = {"panes": Panes, "doctor": Doctor, "ovis": Ovis}
 
 
 def config_path(root: Path | None = None) -> Path:
@@ -71,6 +78,14 @@ def _section(path: Path, name: str, cls: type, table: Any):
                 raise ConfigError(f"{path}: {name}.{key} must be a string")
             if key.endswith("separator") and not value:
                 raise ConfigError(f"{path}: {name}.{key} must not be empty")
+        elif known[key].type is float:
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not 0 <= value < 600
+            ):
+                raise ConfigError(f"{path}: {name}.{key} must be a number of seconds below 600")
+            value = float(value)
         elif isinstance(value, list) and all(isinstance(v, str) for v in value):
             value = tuple(value)
         else:

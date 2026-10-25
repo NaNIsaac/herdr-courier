@@ -24,6 +24,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from . import ovis
+from .config import ConfigError, config_path, load
 from .core.queue import Dispatcher, DispatchError, WrongServer
 from .core.transport import CliHerdr, HerdrError, PaneHerdr, same_socket
 from .state import adopt_old_state, endpoint_path, journal_path, lock_path, state_dir
@@ -372,10 +374,21 @@ def serve(args: argparse.Namespace) -> int:
     except AlreadyRunning as exc:
         print(f"courier serve: {exc}", file=sys.stderr)
         return 1
+    try:
+        config = load(config_path(root))
+    except ConfigError as exc:
+        lock.release()
+        print(f"courier serve: {exc}", file=sys.stderr)
+        return 1
     herdr = PaneHerdr() if args.transport == "pane" else CliHerdr()
+    settle_for = ovis.settle_rule(
+        ovis.Presence(config.ovis.url), config.ovis.panes, config.ovis.settle
+    )
     try:
         herdr_socket = herdr.server_socket()
-        dispatcher = Dispatcher(herdr, journal_path(root), server=herdr_socket)
+        dispatcher = Dispatcher(
+            herdr, journal_path(root), settle_for=settle_for, server=herdr_socket
+        )
     except (HerdrError, WrongServer) as exc:
         lock.release()
         print(f"courier serve: {exc}", file=sys.stderr)
@@ -388,6 +401,11 @@ def serve(args: argparse.Namespace) -> int:
         f"courier serve pid {os.getpid()} on 127.0.0.1:{port}, "
         f"transport {args.transport}, state {root}, herdr {herdr_socket}"
     )
+    if config.ovis.url and config.ovis.panes:
+        print(
+            f"between turns only, while Ovis answers at {config.ovis.url}: "
+            f"{', '.join(config.ovis.panes)} (settle {config.ovis.settle:g} s)"
+        )
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:

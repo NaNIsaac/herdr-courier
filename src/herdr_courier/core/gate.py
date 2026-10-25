@@ -20,6 +20,7 @@ class Observation:
     name: str | None = None
     # herdr's state_change_seq: it moves on a status change too short to be seen between reads.
     state_seq: int | None = None
+    terminal: str | None = None
 
     @property
     def state(self) -> tuple[str, int | None]:
@@ -41,6 +42,7 @@ def check(
     empty_for: float | None,
     settle: float | None = None,
     settled_for: float | None = None,
+    terminal: str | None = None,
 ) -> Verdict:
     """Decide whether to send now.
 
@@ -59,6 +61,12 @@ def check(
     if session and obs.session != session:
         return Verdict(
             False, f"identity_changed: session {obs.session} is not {session}", fatal=True
+        )
+    # Without a session the terminal is the only proof. herdr gives a pane a new terminal when
+    # it restarts, and keeps the pane id across a server restart, so the id alone proves nothing.
+    if not session and terminal and obs.terminal != terminal:
+        return Verdict(
+            False, f"identity_changed: terminal {obs.terminal} is not {terminal}", fatal=True
         )
     if obs.status not in SENDABLE:
         return Verdict(False, f"agent {obs.status}")

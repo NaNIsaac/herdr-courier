@@ -24,6 +24,11 @@ class Herdr(Protocol):
     def submit(self, pane_id: str, text: str) -> None: ...
 
 
+def same_socket(a: str, b: str) -> bool:
+    """Whether two spellings name one herdr socket; the socket path is a herdr server's identity."""
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
 def _exe() -> str:
     return os.environ.get("HERDR_BIN_PATH") or "herdr"
 
@@ -58,6 +63,16 @@ def _result(args: list[str], timeout: float = 15.0) -> dict[str, Any]:
 
 class CliHerdr:
     """Submits through ``herdr agent prompt``, which honours bracketed paste."""
+
+    def server_socket(self) -> str:
+        """The socket every call of this process reaches: HERDR_SOCKET_PATH, else the default
+        session's. herdr names it whether or not a server runs there, and never falls back to
+        another server when none does."""
+        for line in _run(["status", "server"], 15.0).splitlines():
+            key, _, value = line.partition(":")
+            if key.strip() == "socket" and value.strip():
+                return value.strip()
+        raise HerdrError("cli_failed", "herdr status server named no socket")
 
     def agent_get(self, target: str) -> dict[str, Any]:
         return _result(["agent", "get", target])["agent"]

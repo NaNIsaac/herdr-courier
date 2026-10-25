@@ -19,7 +19,7 @@ from typing import Any, Protocol
 from . import display, ovis
 from .client import LostContact, Refused, Unavailable, request
 from .config import Config, ConfigError, Ovis, config_path, load
-from .core.transport import CliHerdr, HerdrError
+from .core.transport import CliHerdr, HerdrError, same_socket
 from .state import endpoint_path, journal_path, state_dir
 
 STALE_TICK = 10.0
@@ -179,9 +179,20 @@ def check_daemon(probes: Probes, root: Path, now: float) -> list[Check]:
                 "read the courier serve pane; if it is stuck, stop it with Ctrl-C and start it again",
             )
         ]
-    checks = [
-        Check("dispatcher", Level.OK, f"pid {pid}, port {endpoint.get('port')}, api {reply['api']}")
-    ]
+    detail = f"pid {pid}, port {endpoint.get('port')}, api {reply['api']}"
+    bound, here = reply.get("server"), os.environ.get("HERDR_SOCKET_PATH")
+    if bound and here and not same_socket(bound, here):
+        checks = [
+            Check(
+                "dispatcher",
+                Level.FAIL,
+                f"{detail}; delivers to the herdr server at {bound}, this pane is on {here}",
+                "courier send from here is refused; use a courier serve started in this server "
+                "with its own COURIER_STATE_DIR",
+            )
+        ]
+    else:
+        checks = [Check("dispatcher", Level.OK, detail + (f", herdr {bound}" if bound else ""))]
     worker = reply.get("worker") or {}
     tick = worker.get("seconds_since_tick")
     if not worker.get("alive") or tick is None or tick > STALE_TICK:

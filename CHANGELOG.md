@@ -10,6 +10,12 @@
 - `doctor.ovis_url` is now `ovis.url`; a `config.toml` that still sets `doctor.ovis_url` is
   reported as an unknown key. `courier serve` now reads `config.toml` and refuses to start when
   it is invalid.
+- `courier serve` is bound to the herdr server its CLI reaches when it starts, and the journal
+  records it. It refuses to start when the journal holds queued messages or holds for another
+  server, since pane ids are numbered per server. `courier send`, `hold` and `release` from a pane
+  of another herdr server are refused (409), and `send --wait` waits on courier serve's server.
+- A message for an agent with no session is tied to the pane's terminal and fails instead of being
+  delivered when the pane or the server restarted.
 - Each `courier serve` start keeps the previous journal as `journal.<UTC time>.jsonl` and the
   newest 10 of them, instead of overwriting `journal.prev.jsonl`, so delivery history survives
   more than one restart. An existing `journal.prev.jsonl` is left in place.

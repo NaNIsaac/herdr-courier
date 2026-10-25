@@ -62,26 +62,39 @@ def fail(exc: Exception, body: dict[str, Any] | None) -> NoReturn:
     raise SystemExit(EXIT_FAILED) from exc
 
 
+def on_server(body: dict[str, Any]) -> dict[str, Any]:
+    """`body` with the herdr server of the calling pane, which courier serve checks against its own.
+
+    A caller outside herdr names none and is taken to mean courier serve's server.
+    """
+    if socket := os.environ.get("HERDR_SOCKET_PATH"):
+        return body | {"herdr_socket": socket}
+    return body
+
+
 def default_source() -> str:
     return os.environ.get("COURIER_SOURCE") or os.environ.get("HERDR_PANE_ID") or "unknown"
 
 
 def cmd_send(args: argparse.Namespace) -> int:
     started = time.monotonic()
-    body = {
-        "target": args.target,
-        "text": args.text,
-        "source": args.source,
-        "human": args.human,
-        # Lets a retry after a lost reply find the first request instead of queuing twice.
-        "client_id": uuid.uuid4().hex,
-    }
+    body = on_server(
+        {
+            "target": args.target,
+            "text": args.text,
+            "source": args.source,
+            "human": args.human,
+            # Lets a retry after a lost reply find the first request instead of queuing twice.
+            "client_id": uuid.uuid4().hex,
+        }
+    )
     try:
-        item = request("POST", "send", body, timeout=SEND_TIMEOUT)["item"]
+        reply = request("POST", "send", body, timeout=SEND_TIMEOUT)
     except LostContact:
-        item = call("POST", "send", body, timeout=SEND_TIMEOUT)["item"]
+        reply = call("POST", "send", body, timeout=SEND_TIMEOUT)
     except (Unavailable, Refused) as exc:
         fail(exc, body)
+    item = reply["item"]
     if not args.wait:
         print(f"queued {item['id']} for {item['target']} ({item['pane_id']})")
         return 0
@@ -104,7 +117,9 @@ def cmd_send(args: argparse.Namespace) -> int:
         if left_ms <= 0:
             return EXIT_TIMEOUT
         wait += ["--timeout", str(left_ms)]
-    return subprocess.run(wait, check=False).returncode
+    # The pane id is courier serve's, so ask the herdr server it delivered to.
+    env = os.environ | ({"HERDR_SOCKET_PATH": reply["server"]} if reply.get("server") else {})
+    return subprocess.run(wait, check=False, env=env).returncode
 
 
 def render_status(reply: dict[str, Any], *, width: int, recent: int, now: float) -> list[str]:
@@ -184,7 +199,9 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_hold(args: argparse.Namespace) -> int:
-    body = {"target": args.target, "owner": args.owner, "reason": args.reason, "ttl": args.ttl}
+    body = on_server(
+        {"target": args.target, "owner": args.owner, "reason": args.reason, "ttl": args.ttl}
+    )
     pane = call("POST", "hold", body)["pane_id"]
     print(
         f"holding {pane} "
@@ -194,7 +211,7 @@ def cmd_hold(args: argparse.Namespace) -> int:
 
 
 def cmd_release(args: argparse.Namespace) -> int:
-    print(f"released {call('POST', 'release', {'target': args.target})['pane_id']}")
+    print(f"released {call('POST', 'release', on_server({'target': args.target}))['pane_id']}")
     return 0
 
 

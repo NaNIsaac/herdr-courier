@@ -17,7 +17,7 @@ from typing import Any
 
 from .gate import Observation, check
 from .inputline import InputLine, LineState, classify, holds
-from .transport import Herdr, HerdrError
+from .transport import Herdr, HerdrError, same_socket
 
 VERIFY_SECONDS = 5.0
 MAX_ATTEMPTS = 5
@@ -61,6 +61,7 @@ class Item:
     retry_at: float = 0.0
     verify_until: float = 0.0
     client_id: str | None = None
+    terminal: str | None = None
 
 
 @dataclass
@@ -84,6 +85,10 @@ class DispatchError(Exception):
     pass
 
 
+class WrongServer(Exception):
+    """The journal holds work for another herdr server than the one this process reaches."""
+
+
 class Dispatcher:
     def __init__(
         self,
@@ -93,19 +98,26 @@ class Dispatcher:
         clock=time.monotonic,
         log=print,
         settle_for: Callable[[str | None], float | None] | None = None,
+        server: str | None = None,
     ) -> None:
-        """``settle_for`` maps an agent name to its between-turns settle time, or None (gate)."""
+        """``settle_for`` maps an agent name to its between-turns settle time, or None (gate).
+
+        ``server`` is the herdr socket every call of ``herdr`` reaches; the journal records it
+        so that queued work is never replayed against another server's pane ids."""
         self.herdr = herdr
         self.journal = journal
         self.clock = clock
         self.log = log
         self.settle_for = settle_for
+        self.server = server
         self.lock = threading.Condition()
         self.items: dict[str, Item] = {}
         self.queues: dict[str, list[str]] = {}
         self.holds: dict[str, Hold] = {}
         self.watch: dict[str, PaneWatch] = {}
         self._replay()
+        if server:
+            self._journal({"event": "server", "socket": server})
 
     def enqueue(
         self,
@@ -135,6 +147,7 @@ class Dispatcher:
             human=human,
             created=time.time(),
             client_id=client_id,
+            terminal=agent.get("terminal_id"),
         )
         with self.lock:
             # A retried request may have raced the first one while the target was resolved.
@@ -271,6 +284,7 @@ class Dispatcher:
                 empty_for=self._empty_for(pane_id, obs.line, now),
                 settle=settle,
                 settled_for=self._settled_for(pane_id, obs, now),
+                terminal=item.terminal,
             )
             if verdict.fatal:
                 self._finish(item, State.FAILED, verdict.reason)
@@ -294,6 +308,7 @@ class Dispatcher:
                 empty_for=math.inf if final.line.state is LineState.EMPTY else None,
                 settle=settle,
                 settled_for=self._settled_for(pane_id, final, now),
+                terminal=item.terminal,
             )
             if verdict.fatal:
                 self._finish(item, State.FAILED, verdict.reason)
@@ -363,6 +378,7 @@ class Dispatcher:
             line=line,
             name=agent.get("name"),
             state_seq=agent.get("state_change_seq"),
+            terminal=agent.get("terminal_id"),
         )
         with self.lock:
             self.watch.setdefault(
@@ -495,12 +511,15 @@ class Dispatcher:
             return
         items: dict[str, Item] = {}
         holds: dict[str, dict[str, Any]] = {}
+        bound: str | None = None
         for raw in self.journal.read_text(encoding="utf-8").splitlines():
             try:
                 entry = json.loads(raw)
             except ValueError:
                 continue
             match entry.get("event"):
+                case "server":
+                    bound = entry.get("socket")
                 case "hold":
                     holds[entry["pane_id"]] = entry
                 case "release" | "hold_expired":
@@ -518,8 +537,25 @@ class Dispatcher:
         pending = sorted(
             (i for i in items.values() if i.state not in FINAL), key=lambda i: i.created
         )
-        self._close_generation()
         now_wall = time.time()
+        live_holds = [
+            h for h in holds.values() if h.get("until_wall") is None or h["until_wall"] > now_wall
+        ]
+        # Pane ids are numbered per server, so another server's w1:p1 is a different pane. With
+        # nothing left to deliver the state directory may serve the new server.
+        if (
+            self.server
+            and bound
+            and not same_socket(bound, self.server)
+            and (pending or live_holds)
+        ):
+            raise WrongServer(
+                f"{self.journal} holds {len(pending)} queued messages and {len(live_holds)} "
+                f"holds for the herdr server at {bound}, but herdr here reaches {self.server}. "
+                f"Start courier serve where HERDR_SOCKET_PATH is {bound}, or give this server its "
+                "own COURIER_STATE_DIR."
+            )
+        self._close_generation()
         for pane_id, entry in holds.items():
             until_wall = entry.get("until_wall")
             if until_wall is not None and until_wall <= now_wall:

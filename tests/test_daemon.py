@@ -11,7 +11,7 @@ import pytest
 from herdr_courier import cli, daemon
 from herdr_courier.core.queue import Dispatcher
 from herdr_courier.daemon import AlreadyRunning, DispatchService, InstanceLock, Server
-from herdr_courier.state import endpoint_path, lock_path
+from herdr_courier.state import endpoint_path, journal_path, lock_path
 
 
 @pytest.fixture
@@ -21,9 +21,11 @@ def start(tmp_path, monkeypatch):
     monkeypatch.setattr("herdr_courier.core.gate.DEBOUNCE", 0.1)
     running = []
 
-    def go(herdr, *, enabled=True, tick=0.05):
+    def go(herdr, *, enabled=True, tick=0.05, server=None):
         dispatcher = (
-            Dispatcher(herdr, tmp_path / "journal.jsonl", log=lambda _: None) if enabled else None
+            Dispatcher(herdr, tmp_path / "journal.jsonl", log=lambda _: None, server=server)
+            if enabled
+            else None
         )
         service = DispatchService(dispatcher, tmp_path, tick=tick)
         server = Server(service)
@@ -435,4 +437,88 @@ def test_serve_refuses_a_broken_config_and_frees_the_lock(tmp_path, monkeypatch,
     (tmp_path / "config.toml").write_text('[doctor]\novis_url = ""\n', encoding="utf-8")
     assert cli.serve_main(["--port", "0"]) == 1
     assert "unknown key doctor.ovis_url" in capsys.readouterr().err
+
+
+A_SOCK = os.path.join("herdr", "herdr.sock")
+B_SOCK = os.path.join("herdr", "sessions", "lab", "herdr.sock")
+
+
+def test_caller_on_another_herdr_server_is_refused(herdr, start):
+    herdr.add("w1:p1", "boss")
+    server, service = start(herdr, server=A_SOCK)
+    token = service.token
+    for path, body in [
+        ("send", {"target": "boss", "text": "hello"}),
+        ("hold", {"target": "boss"}),
+        ("release", {"target": "boss"}),
+    ]:
+        status, reply = call(
+            server, "POST", f"/api/dispatch/{path}", body | {"herdr_socket": B_SOCK}, token
+        )
+        assert status == 409, path
+        assert "nothing was done" in reply["detail"]
+    _, reply = call(server, "GET", "/api/dispatch/status", token=token)
+    assert reply["status"]["panes"] == {}
+    assert reply["server"] == A_SOCK
+    spelled = os.path.join("herdr", ".", "herdr.sock")
+    for claim in ({"herdr_socket": spelled}, {}):
+        status, reply = call(
+            server, "POST", "/api/dispatch/send", {"target": "boss", "text": "hi"} | claim, token
+        )
+        assert status == 200
+        assert reply["server"] == A_SOCK
+
+
+def test_cli_works_from_any_directory_and_refuses_another_server(
+    herdr, start, tmp_path, monkeypatch, capsys
+):
+    pane = herdr.add("w1:p1", "boss")
+    start(herdr, server=A_SOCK)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.setenv("HERDR_SOCKET_PATH", B_SOCK)
+    with pytest.raises(SystemExit) as refused:
+        cli.main(["send", "boss", "[lab] from another server"])
+    assert refused.value.code == cli.EXIT_FAILED
+    assert "delivers to the herdr server at" in capsys.readouterr().err
+    monkeypatch.setenv("HERDR_SOCKET_PATH", A_SOCK)
+    assert cli.main(["send", "boss", "[lane] same server", "--wait", "--timeout", "0"]) in (0, 4)
+    monkeypatch.delenv("HERDR_SOCKET_PATH")
+    assert cli.main(["send", "boss", "[script] outside herdr", "--wait", "--timeout", "0"]) in (
+        0,
+        4,
+    )
+    deadline = time.monotonic() + 5
+    while len(pane.submitted) < 2 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert pane.submitted == ["[lane] same server", "[script] outside herdr"]
+
+
+def test_send_wait_asks_the_herdr_server_it_delivered_to(herdr, start, monkeypatch):
+    herdr.add("w1:p1", "boss")
+    start(herdr, server=A_SOCK)
+    monkeypatch.delenv("HERDR_SOCKET_PATH", raising=False)
+    seen = []
+
+    def run(cmd, **kw):
+        seen.append((cmd, kw["env"].get("HERDR_SOCKET_PATH")))
+        return type("R", (), {"returncode": 0})
+
+    monkeypatch.setattr(cli.subprocess, "run", run)
+    assert cli.main(["send", "boss", "[lane] done", "--wait", "--timeout", "10000"]) == 0
+    assert seen == [(["herdr", "agent", "wait", "w1:p1", "--timeout", seen[0][0][-1]], A_SOCK)]
+
+
+def test_serve_refuses_a_journal_of_another_herdr_server(herdr, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("COURIER_STATE_DIR", str(tmp_path))
+    herdr.add("w1:p1", "boss")
+    first = Dispatcher(herdr, journal_path(tmp_path), log=lambda _: None, server=A_SOCK)
+    first.enqueue("boss", "queued on A", source="t")
+    before = journal_path(tmp_path).read_text(encoding="utf-8")
+    monkeypatch.setattr(daemon.CliHerdr, "server_socket", lambda self: B_SOCK)
+    assert cli.serve_main(["--port", "0"]) == 1
+    assert f"for the herdr server at {A_SOCK}" in capsys.readouterr().err
+    assert journal_path(tmp_path).read_text(encoding="utf-8") == before
+    assert not endpoint_path(tmp_path).exists()
     InstanceLock(lock_path(tmp_path)).release()

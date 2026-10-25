@@ -191,7 +191,7 @@ def test_config_file_is_read_and_checked(roots):
     root, _ = roots
     checks = {c.name: c for c in doctor.diagnose(FakeProbes(), root=root, now=NOW)}
     assert checks["config"].detail.startswith("built-in defaults")
-    (root / "config.toml").write_text('[doctor]\nother_writers = []\novis_url = ""\n')
+    (root / "config.toml").write_text('[doctor]\nother_writers = []\n[ovis]\nurl = ""\n')
     checks = {c.name: c for c in doctor.diagnose(FakeProbes(), root=root, now=NOW)}
     assert checks["config"].detail == "config.toml in the state directory"
     assert checks["writers"].detail == "no other writers configured"
@@ -210,7 +210,7 @@ def test_ovis(roots):
     probes.ovis = {"ok": True, "herdr": {"version": "0.9.4"}, "web_ui": {}}
     ovis = run(probes, roots)["ovis"]
     assert ovis.level is Level.WARN
-    assert ovis.detail.endswith("CLI is 0.9.5")
+    assert ovis.detail.endswith("CLI is 0.9.5; between turns only: secretary")
 
 
 def test_render_fits_a_phone(roots):

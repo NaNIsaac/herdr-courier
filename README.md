@@ -108,7 +108,8 @@ ok   journal    empty (nothing queued since courier serve
                 started)
 ok   config     built-in defaults (no config.toml)
 ok   writers    no other dispatcher running
-ok   ovis       ok, revision d5a35b7, sees herdr 0.9.5
+ok   ovis       ok, revision d5a35b7, sees herdr 0.9.5;
+                between turns only: secretary
 ```
 
 List the panes (rows left out here); `courier agents --json` prints the same rows as JSON:
@@ -134,6 +135,9 @@ shell = no agent in that pane
 - Only messages sent through `courier send` are queued. A program that calls
   `herdr agent prompt` directly can still type over you.
 - One `courier serve` per state directory, on one machine. It listens on 127.0.0.1 only.
+- courier cannot see messages queued in Ovis chat; Ovis tells no other program about them. For the
+  agents in `ovis.panes` it waits for the end of each turn instead, so a long turn delays
+  messages to them.
 
 ## Use it
 
@@ -246,7 +250,9 @@ keys you change. An unknown key or a wrong type is an error, which `courier doct
 | `panes.named_freely` | `["infra"]` | prefixes that take any name; both lists `[]` turn the check off |
 | `panes.path_variables` | `["DEV", "DATA"]` | working directories under these are shown as `$DEV\...` |
 | `doctor.other_writers` | `["~/.isaac-control-center/dispatch/endpoint.json"]` | endpoint files of other programs that type into panes |
-| `doctor.ovis_url` | `"http://127.0.0.1:7317"` | Ovis health check; `""` skips it |
+| `ovis.url` | `"http://127.0.0.1:7317"` | Ovis health route; `""` means no Ovis |
+| `ovis.panes` | `["secretary"]` | while Ovis answers, messages for these agents go only between turns |
+| `ovis.settle` | `3.0` | seconds the agent state must stay unchanged after a turn before such a message goes |
 
 ## How it works
 

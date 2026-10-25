@@ -17,6 +17,13 @@ class Observation:
     session: str | None
     focused: bool
     line: InputLine
+    name: str | None = None
+    # herdr's state_change_seq: it moves on a status change too short to be seen between reads.
+    state_seq: int | None = None
+
+    @property
+    def state(self) -> tuple[str, int | None]:
+        return self.status, self.state_seq
 
 
 @dataclass(frozen=True)
@@ -32,6 +39,8 @@ def check(
     session: str | None,
     hold: str | None,
     empty_for: float | None,
+    settle: float | None = None,
+    settled_for: float | None = None,
 ) -> Verdict:
     """Decide whether to send now.
 
@@ -39,6 +48,12 @@ def check(
     if the latest read was not empty. A focused pane gets a longer debounce because focus is
     the only hint herdr gives that a human may be about to type there; it is not per client,
     so it is a hint and not a lock.
+
+    ``settle`` is set for a pane that also takes queued Ovis chat messages: the message goes only
+    between turns, once the agent state (``settled_for``) has not changed for that many seconds.
+    Ovis sends its queued message as soon as the turn ends and leaves the paste unsent in the box
+    if the agent starts another turn before its Enter; a prompt Claude Code queued during the
+    turn starts one at exactly that moment.
     """
     # A pane that had a session and now reports none is not the agent the message was for.
     if session and obs.session != session:
@@ -49,6 +64,13 @@ def check(
         return Verdict(False, f"agent {obs.status}")
     if hold:
         return Verdict(False, f"hold: {hold}")
+    if settle is not None:
+        if obs.status == "working":
+            return Verdict(
+                False, "between turns: Ovis may send a queued message when this turn ends"
+            )
+        if settled_for is None or settled_for < settle:
+            return Verdict(False, f"settle: agent state must stay unchanged for {settle:g} s")
     # Reasons stay constant while the condition holds, so the journal records changes of
     # condition rather than every keystroke; the live evidence is in the status view.
     if obs.line.state is LineState.TYPED:

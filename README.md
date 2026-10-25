@@ -67,7 +67,7 @@ Start the daemon; `hcd` and `hc serve` are other names for `courier serve`:
 
 ```text
 $ hcd
-courier serve pid 13500 on 127.0.0.1:61710, transport agent, state C:\Users\you\AppData\Local\herdr-courier
+courier serve pid 13500 on 127.0.0.1:61710, transport agent, state C:\Users\you\AppData\Local\herdr-courier, herdr C:\Users\you\AppData\Roaming\herdr\herdr.sock
 ```
 
 Report from a lane to the agent `reviewer`:
@@ -101,7 +101,8 @@ Check that everything is alive:
 $ courier doctor
 courier doctor: all checks pass
 ok   herdr      0.9.5; 13 panes, 6 agents
-ok   dispatcher pid 13500, port 61710, api 1
+ok   dispatcher pid 13500, port 61710, api 1, herdr
+                C:\Users\you\AppData\Roaming\herdr\herdr.sock
 ok   worker     last pass 0.0 s ago, no errors
 ok   queue      0 queued, 0 held
 ok   journal    empty (nothing queued since courier serve
@@ -134,6 +135,9 @@ shell = no agent in that pane
 - Only messages sent through `courier send` are queued. A program that calls
   `herdr agent prompt` directly can still type over you.
 - One `courier serve` per state directory, on one machine. It listens on 127.0.0.1 only.
+- It delivers only to the herdr server its herdr CLI reaches when it starts (`HERDR_SOCKET_PATH`,
+  else the default session) and refuses `courier send`, `hold` and `release` from a pane of another
+  herdr server. Another server needs its own `courier serve` with its own `COURIER_STATE_DIR`.
 
 ## Use it
 

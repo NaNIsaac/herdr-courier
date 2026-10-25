@@ -24,8 +24,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from .core.queue import Dispatcher, DispatchError
-from .core.transport import CliHerdr, PaneHerdr
+from .core.queue import Dispatcher, DispatchError, WrongServer
+from .core.transport import CliHerdr, HerdrError, PaneHerdr, same_socket
 from .state import adopt_old_state, endpoint_path, journal_path, lock_path, state_dir
 
 TICK = 0.5
@@ -198,6 +198,8 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
         except DispatchError as exc:
             raise BadRequest(400, str(exc)) from exc
 
+    if method == "POST" and path in ("send", "hold", "release"):
+        _check_server(d, body)
     match method, path:
         case "POST", "send":
             client_id = body.get("client_id")
@@ -212,7 +214,7 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
             item = run(
                 lambda: d.enqueue(target, text, source=source, human=human, client_id=client_id)
             )
-            return {"item": asdict(item)}
+            return {"item": asdict(item), "server": d.server}
         case "POST", "wait":
             item_id = _text(body, "id", 1, 32)
             timeout = _number(body, "timeout", 60, 0, 300)
@@ -220,7 +222,7 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
         case "GET", "status":
             target = query.get("target", [None])[0]
             pane = None if target is None else run(lambda: d.resolve(target))
-            return {"status": d.status(pane), "worker": service.health()}
+            return {"status": d.status(pane), "worker": service.health(), "server": d.server}
         case "POST", "hold":
             target = _text(body, "target", 1, 64)
             owner = _text(body, "owner", 0, 64, "unknown")
@@ -238,6 +240,22 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
             item_id = _text(body, "id", 1, 32)
             return {"item": asdict(run(lambda: d.cancel(item_id)))}
     raise BadRequest(404, f"no route {method} /api/dispatch/{path}")
+
+
+def _check_server(d: Dispatcher, body: dict) -> None:
+    """Refuse a caller that runs in a pane of another herdr server: its target names and pane
+    ids mean other panes there, and delivering here would reach the wrong agent."""
+    claim = body.get("herdr_socket")
+    if claim is None or d.server is None:
+        return
+    if not isinstance(claim, str) or not claim:
+        raise BadRequest(400, "herdr_socket must be a non-empty string")
+    if not same_socket(claim, d.server):
+        raise BadRequest(
+            409,
+            f"this courier serve delivers to the herdr server at {d.server}; the caller is on "
+            f"{claim}; nothing was done",
+        )
 
 
 def _reject_constant(name: str) -> float:
@@ -355,13 +373,20 @@ def serve(args: argparse.Namespace) -> int:
         print(f"courier serve: {exc}", file=sys.stderr)
         return 1
     herdr = PaneHerdr() if args.transport == "pane" else CliHerdr()
-    service = DispatchService(Dispatcher(herdr, journal_path(root)), root, args.tick, lock)
+    try:
+        herdr_socket = herdr.server_socket()
+        dispatcher = Dispatcher(herdr, journal_path(root), server=herdr_socket)
+    except (HerdrError, WrongServer) as exc:
+        lock.release()
+        print(f"courier serve: {exc}", file=sys.stderr)
+        return 1
+    service = DispatchService(dispatcher, root, args.tick, lock)
     server = Server(service, args.port)
     port = server.server_address[1]
     service.start(port)
     print(
         f"courier serve pid {os.getpid()} on 127.0.0.1:{port}, "
-        f"transport {args.transport}, state {root}"
+        f"transport {args.transport}, state {root}, herdr {herdr_socket}"
     )
     try:
         server.serve_forever(poll_interval=0.5)

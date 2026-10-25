@@ -58,6 +58,26 @@ listens on 127.0.0.1 only, refuses a `Host` other than localhost (so a web page 
 own name at 127.0.0.1 cannot reach it), requires the token on every route, and sends no CORS
 headers.
 
+## One herdr server
+
+A herdr server is known by its socket: `HERDR_SOCKET_PATH` when set, else the default session's;
+`herdr --session <name>` picks a named session's. The working directory plays no part. A socket
+with no server behind it fails with `server_not_running`; herdr never falls back to another
+server. Pane ids are numbered per server, so two servers both have `w1:p1`, and a server keeps
+its pane ids across a restart while giving every pane a new `terminal_id` (herdr 0.9.5, read on
+isolated named sessions).
+
+`courier serve` asks `herdr status server` for its socket when it starts and calls only that
+server for its whole life. The journal records the socket. A start that reaches another socket
+while the journal still holds queued messages or holds exits with a message instead of replaying
+them against the other server's panes; with nothing left it takes the new server. While the server
+is down, messages wait and new ones are refused; when the same socket answers again they go on.
+
+`courier send`, `hold` and `release` from inside a herdr pane send that pane's
+`HERDR_SOCKET_PATH`, and `courier serve` refuses a request from another server with 409: its
+names and pane ids mean other panes there. A caller outside herdr names no server and is taken to
+mean courier serve's. `send --wait` runs `herdr agent wait` against courier serve's server.
+
 If `courier serve` is not running, `courier send` exits with status 3, says nothing was sent, and
 prints the manual path (read the target's input box, then `herdr agent prompt`). It never falls
 back to writing into the pane itself.
@@ -77,7 +97,10 @@ All of these, observed again right before writing (a second `agent get` and box 
    reports as idle, waits.
 3. No hold on the pane (`courier hold`).
 4. The pane still runs the agent session the message was queued for; a different or missing
-   session fails the item instead of delivering it to someone else.
+   session fails the item instead of delivering it to someone else. A message queued for an agent
+   with no session is tied to the pane's `terminal_id` instead and fails when the pane has a new
+   terminal (the pane or the server restarted). Names are resolved once, when the message is
+   queued: a name that moves to another pane does not take the message along.
 
 Right before writing, the item is journalled as `submitting` while the queue lock is held. From
 then on it is never written again: a cancel is refused, and if the process dies the next start

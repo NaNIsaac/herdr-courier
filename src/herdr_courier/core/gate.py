@@ -17,6 +17,7 @@ class Observation:
     session: str | None
     focused: bool
     line: InputLine
+    terminal: str | None = None
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ def check(
     session: str | None,
     hold: str | None,
     empty_for: float | None,
+    terminal: str | None = None,
 ) -> Verdict:
     """Decide whether to send now.
 
@@ -44,6 +46,12 @@ def check(
     if session and obs.session != session:
         return Verdict(
             False, f"identity_changed: session {obs.session} is not {session}", fatal=True
+        )
+    # Without a session the terminal is the only proof. herdr gives a pane a new terminal when
+    # it restarts, and keeps the pane id across a server restart, so the id alone proves nothing.
+    if not session and terminal and obs.terminal != terminal:
+        return Verdict(
+            False, f"identity_changed: terminal {obs.terminal} is not {terminal}", fatal=True
         )
     if obs.status not in SENDABLE:
         return Verdict(False, f"agent {obs.status}")

@@ -20,6 +20,7 @@ class FakePane:
     submit_mode: str = "ok"
     submitted: list[str] = field(default_factory=list)
     submit_calls: int = 0
+    terminal: str | None = None
 
     def screen(self) -> str:
         if self.dialog:
@@ -37,6 +38,7 @@ class FakeHerdr:
     def __init__(self) -> None:
         self.panes: dict[str, FakePane] = {}
         self.names: dict[str, str] = {}
+        self.down = False
 
     def add(self, pane_id: str, name: str | None = None, **kw) -> FakePane:
         self.panes[pane_id] = FakePane(**kw)
@@ -45,6 +47,8 @@ class FakeHerdr:
         return self.panes[pane_id]
 
     def _pane(self, target: str) -> tuple[str, FakePane]:
+        if self.down:
+            raise HerdrError("server_not_running", "no herdr server is running at the socket")
         pane_id = self.names.get(target, target)
         if pane_id not in self.panes:
             raise HerdrError("agent_not_found", f"agent target {target} not found")
@@ -57,6 +61,7 @@ class FakeHerdr:
             "agent_status": pane.status,
             "focused": pane.focused,
             "agent_session": {"value": pane.session},
+            "terminal_id": pane.terminal,
         }
 
     def agent_list(self) -> list[dict]:

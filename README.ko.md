@@ -66,7 +66,7 @@ pane id를 씁니다. `herdr agent prompt`가 받는 대상과 같습니다.
 
 ```text
 $ hcd
-courier serve pid 13500 on 127.0.0.1:61710, transport agent, state C:\Users\you\AppData\Local\herdr-courier
+courier serve pid 13500 on 127.0.0.1:61710, transport agent, state C:\Users\you\AppData\Local\herdr-courier, herdr C:\Users\you\AppData\Roaming\herdr\herdr.sock
 ```
 
 레인에서 에이전트 `reviewer`에게 보고합니다.
@@ -100,7 +100,8 @@ released w1:p61
 $ courier doctor
 courier doctor: all checks pass
 ok   herdr      0.9.5; 13 panes, 6 agents
-ok   dispatcher pid 13500, port 61710, api 1
+ok   dispatcher pid 13500, port 61710, api 1, herdr
+                C:\Users\you\AppData\Roaming\herdr\herdr.sock
 ok   worker     last pass 0.0 s ago, no errors
 ok   queue      0 queued, 0 held
 ok   journal    empty (nothing queued since courier serve
@@ -132,6 +133,9 @@ shell = no agent in that pane
 - `courier send`로 보낸 메시지만 큐에 들어갑니다. `herdr agent prompt`를 직접 부르는 프로그램은
   여전히 입력 중인 글 위에 쓸 수 있습니다.
 - 상태 폴더 하나에 `courier serve` 하나, PC 한 대 안에서만 동작합니다. 127.0.0.1에서만 받습니다.
+- 시작할 때 herdr CLI가 닿는 herdr 서버(`HERDR_SOCKET_PATH`, 없으면 기본 세션)에만 전달하고, 다른 herdr
+  서버의 pane에서 온 `courier send`·`hold`·`release`는 거부합니다. 다른 서버에는 따로
+  `COURIER_STATE_DIR`을 준 `courier serve`가 하나 더 필요합니다.
 
 ## 쓰는 법
 

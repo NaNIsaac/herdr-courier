@@ -246,3 +246,16 @@ def test_pid_alive():
     child.wait()
     assert not doctor.pid_alive(child.pid)
     assert not doctor.pid_alive(0)
+
+
+def test_dispatcher_names_its_herdr_server_and_fails_from_another(roots, monkeypatch):
+    probes = FakeProbes()
+    probes.daemon = status_reply() | {"server": os.path.join("herdr", "herdr.sock")}
+    monkeypatch.delenv("HERDR_SOCKET_PATH", raising=False)
+    ok = run(probes, roots)["dispatcher"]
+    assert ok.level is Level.OK
+    assert ok.detail.endswith(f"herdr {os.path.join('herdr', 'herdr.sock')}")
+    monkeypatch.setenv("HERDR_SOCKET_PATH", os.path.join("herdr", "sessions", "lab", "herdr.sock"))
+    other = run(probes, roots)["dispatcher"]
+    assert other.level is Level.FAIL
+    assert "this pane is on" in other.detail

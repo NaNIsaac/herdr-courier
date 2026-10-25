@@ -2,7 +2,7 @@
 
 Every check only reads: herdr's CLI, courier serve's endpoint file, status route and journal,
 config.toml, the endpoint files of other programs that write prompts into panes
-(``doctor.other_writers``), and Ovis's unauthenticated health route (``doctor.ovis_url``). No
+(``doctor.other_writers``), and Ovis's unauthenticated health route (``ovis.url``). No
 lock is taken, so a doctor run cannot stop a courier serve that is starting at the same moment.
 """
 
@@ -11,15 +11,14 @@ import os
 import subprocess
 import time
 import urllib.error
-import urllib.request
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
 
-from . import display
+from . import display, ovis
 from .client import LostContact, Refused, Unavailable, request
-from .config import Config, ConfigError, config_path, load
+from .config import Config, ConfigError, Ovis, config_path, load
 from .core.transport import CliHerdr, HerdrError
 from .state import endpoint_path, journal_path, state_dir
 
@@ -85,8 +84,7 @@ class LiveProbes:
         return pid_alive(pid)
 
     def ovis_health(self, url: str) -> dict[str, Any]:
-        with urllib.request.urlopen(f"{url}/api/health", timeout=3) as resp:
-            return json.loads(resp.read())
+        return ovis.health(url)
 
 
 def pid_alive(pid: int) -> bool:
@@ -306,7 +304,8 @@ def check_other_writers(probes: Probes, paths: tuple[str, ...]) -> Check:
     return Check("writers", Level.OK, f"{detail} ({stale} stale endpoint)" if stale else detail)
 
 
-def check_ovis(probes: Probes, url: str, herdr_version: str | None) -> Check:
+def check_ovis(probes: Probes, settings: Ovis, herdr_version: str | None) -> Check:
+    url = settings.url
     try:
         health = probes.ovis_health(url)
     except (OSError, ValueError) as exc:
@@ -319,9 +318,12 @@ def check_ovis(probes: Probes, url: str, herdr_version: str | None) -> Check:
     seen = (health.get("herdr") or {}).get("version")
     revision = str((health.get("web_ui") or {}).get("revision") or "?")[:7]
     detail = f"ok, revision {revision}, sees herdr {seen}"
+    level = Level.OK
     if herdr_version and seen and seen != herdr_version:
-        return Check("ovis", Level.WARN, f"{detail}, CLI is {herdr_version}")
-    return Check("ovis", Level.OK, detail)
+        level, detail = Level.WARN, f"{detail}, CLI is {herdr_version}"
+    if settings.panes:
+        detail += f"; between turns only: {', '.join(settings.panes)}"
+    return Check("ovis", level, detail)
 
 
 def diagnose(
@@ -343,8 +345,8 @@ def diagnose(
         settings,
         check_other_writers(probes, config.doctor.other_writers),
     ]
-    if config.doctor.ovis_url:
-        checks.append(check_ovis(probes, config.doctor.ovis_url, version))
+    if config.ovis.url:
+        checks.append(check_ovis(probes, config.ovis, version))
     return checks
 
 

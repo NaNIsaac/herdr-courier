@@ -53,6 +53,7 @@ class FakeHerdr:
     def agent_get(self, target: str) -> dict:
         pane_id, pane = self._pane(target)
         return {
+            "name": next((n for n, p in self.names.items() if p == pane_id), None),
             "pane_id": pane_id,
             "agent_status": pane.status,
             "focused": pane.focused,

@@ -12,7 +12,7 @@ def test_no_file_means_defaults(state_dir):
     loaded = config.load()
     assert loaded.path is None
     assert loaded.panes.named_after_tab == defaults.NAMED_AFTER_TAB
-    assert loaded.doctor.ovis_url == defaults.OVIS_URL
+    assert loaded.ovis == config.Ovis(defaults.OVIS_URL, defaults.OVIS_PANES, defaults.OVIS_SETTLE)
 
 
 def test_file_overrides_only_what_it_sets(state_dir):
@@ -27,6 +27,13 @@ def test_file_overrides_only_what_it_sets(state_dir):
     assert loaded.doctor == config.Doctor()
 
 
+def test_settle_takes_whole_seconds(state_dir):
+    (state_dir / "config.toml").write_text(
+        '[ovis]\npanes = ["boss"]\nsettle = 5\n', encoding="utf-8"
+    )
+    assert config.load().ovis == config.Ovis(panes=("boss",), settle=5.0)
+
+
 @pytest.mark.parametrize(
     ("text", "expect"),
     [
@@ -37,6 +44,9 @@ def test_file_overrides_only_what_it_sets(state_dir):
         ('[panes]\nnamed_freely = "infra"\n', "panes.named_freely must be a list of strings"),
         ('[panes]\nseparator = ""\n', "panes.separator must not be empty"),
         ("panes = 1\n", "panes must be a table"),
+        ('[ovis]\nsettle = "3"\n', "ovis.settle must be a number of seconds"),
+        ("[ovis]\nsettle = nan\n", "ovis.settle must be a number of seconds"),
+        ("[ovis]\nsettle = true\n", "ovis.settle must be a number of seconds"),
     ],
 )
 def test_bad_file_is_an_error(state_dir, text, expect):

@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from herdr_courier.core.queue import MAX_ATTEMPTS, Dispatcher, DispatchError, State
+from herdr_courier.core.queue import JOURNAL_KEEP, MAX_ATTEMPTS, Dispatcher, DispatchError, State
 
 
 def test_waits_while_human_is_typing_and_never_merges(herdr, make_dispatcher, run):
@@ -199,7 +199,25 @@ def test_restart_restores_pending_and_does_not_resend_unconfirmed(herdr, clock, 
     run(restarted, 2)
     assert a.submitted == ["still queued"]
     assert b.submit_calls == 1
-    assert (tmp_path / "journal.prev.jsonl").exists()
+    assert len(list(tmp_path.glob("journal.[0-9]*.jsonl"))) == 1
+
+
+def test_restarts_keep_journal_generations_and_the_old_prev_file(herdr, clock, tmp_path):
+    journal = tmp_path / "journal.jsonl"
+    (tmp_path / "journal.prev.jsonl").write_text("left by 0.2.0\n", encoding="utf-8")
+    for i in range(JOURNAL_KEEP + 2):
+        (tmp_path / f"journal.2026010{i // 10}T0000{i % 10:02d}Z.jsonl").write_text(
+            "", encoding="utf-8"
+        )
+    first = Dispatcher(herdr, journal, clock=clock, log=lambda _: None)
+    herdr.add("w1:p1", box="typing")
+    first.enqueue("w1:p1", "kept in history", source="t")
+    Dispatcher(herdr, journal, clock=clock, log=lambda _: None)
+
+    generations = sorted(tmp_path.glob("journal.[0-9]*.jsonl"))
+    assert len(generations) == JOURNAL_KEEP
+    assert "kept in history" in generations[-1].read_text(encoding="utf-8")
+    assert (tmp_path / "journal.prev.jsonl").read_text(encoding="utf-8") == "left by 0.2.0\n"
 
 
 def test_journal_records_each_transition(herdr, make_dispatcher, run, tmp_path):

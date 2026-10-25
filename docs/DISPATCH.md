@@ -45,7 +45,8 @@ The state directory is `%LOCALAPPDATA%\herdr-courier` on Windows and
 `COURIER_STATE_DIR` overrides it. A 0.1 directory (`herdr-console`) is moved to the new name on
 the first start when the new one does not exist yet. Before it reads the journal, `courier serve`
 takes an OS file lock on `<state dir>/lock`, so a second `courier serve` exits with a message; the
-OS releases the lock when the process dies.
+OS releases the lock when the process dies. After replaying the journal it renames it to
+`journal.<UTC time>.jsonl` and starts a new one; the newest 10 of those generations are kept.
 
 On startup `courier serve` writes `<state dir>/endpoint.json` with its port (any free port unless
 `--port` is given), a fresh random token and its pid, and removes it on clean shutdown if it still

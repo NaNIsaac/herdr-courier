@@ -33,3 +33,10 @@ url = "http://127.0.0.1:7317"
 # when the turn ends and leaves it unsent in the input box if another turn starts first.
 panes = ["secretary"]
 settle = 3.0
+
+[mailbox]
+# courier serve also appends every queued message to mailbox/<target>.jsonl in the state
+# directory, with the journal's id. Typing is unchanged. See docs/mailbox.md.
+write = false
+# Agents for which `courier inbox --hook` returns their open messages to a Claude Code hook.
+readers = []

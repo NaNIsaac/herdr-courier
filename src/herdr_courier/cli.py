@@ -14,11 +14,14 @@ import sys
 import time
 import urllib.parse
 import uuid
+from dataclasses import asdict
+from pathlib import Path
 from typing import Any, NoReturn
 
-from . import agents, config, daemon, display, doctor, panes
+from . import agents, config, daemon, display, doctor, mailbox, panes
 from .client import LostContact, Refused, Unavailable, request
 from .core.transport import CliHerdr, HerdrError
+from .state import state_dir
 
 EXIT_FAILED = 1
 EXIT_UNAVAILABLE = 3
@@ -27,6 +30,8 @@ EXIT_TIMEOUT = 4
 SEND_TIMEOUT = 30.0
 SERVE_HELP = "run the dispatcher, the one process that writes into panes"
 SERVE_DESCRIPTION = "Run the dispatcher in the foreground. Start it in a herdr shell pane."
+# What Git Bash makes of an argument that starts with /, such as /effort (MSYS path conversion).
+GIT_BASH_PREFIX = "C:/Program Files/Git/"
 
 
 def manual_path(target: str, text: str | None) -> str:
@@ -78,6 +83,12 @@ def default_source() -> str:
 
 def cmd_send(args: argparse.Namespace) -> int:
     started = time.monotonic()
+    if args.text.startswith(GIT_BASH_PREFIX):
+        print(
+            f"courier: warning: the text starts with {GIT_BASH_PREFIX}, which is how Git Bash "
+            "rewrites a leading /; run with MSYS_NO_PATHCONV=1 if you meant a slash command",
+            file=sys.stderr,
+        )
     body = on_server(
         {
             "target": args.target,
@@ -282,6 +293,85 @@ def cmd_panes(args: argparse.Namespace) -> int:
     return 0
 
 
+def own_name() -> str | None:
+    """The herdr agent name of the calling pane, as role-brief finds it."""
+    pane = os.environ.get("HERDR_PANE_ID")
+    if not pane:
+        return None
+    try:
+        found = [a for a in CliHerdr().agent_list() if a.get("pane_id") == pane]
+    except HerdrError:
+        return None
+    return (found[0].get("name") or None) if found else None
+
+
+def inbox_hook(root: Path, name: str | None) -> int:
+    """For a Claude Code hook: open messages as additionalContext, and nothing when there are none.
+
+    UserPromptSubmit shows new messages; SessionStart (after a compaction or a restart) shows every
+    message not yet marked done again, since the context that held them may be gone. A hook must
+    not break the agent's turn, so every failure is logged and the exit status stays 0.
+    """
+    try:
+        raw = sys.stdin.read() if not sys.stdin.isatty() else ""
+        payload = json.loads(raw) if raw.strip() else {}
+        event = payload.get("hook_event_name") or "UserPromptSubmit"
+        detail = f"{event}/{payload['source']}" if payload.get("source") else event
+        readers = config.load().mailbox.readers
+        # Checked before asking herdr, so the hook costs nothing in a store with no readers.
+        if not readers or (name := name or own_name()) not in readers:
+            return 0
+        messages = mailbox.pending(mailbox.load(root, name), again=event == "SessionStart")
+        text = mailbox.hook_text(name, messages) if messages else ""
+        ids = ",".join(m.id for m in messages) or "-"
+        mailbox.log_hook(root, f"{name} {detail} shown={ids} bytes={len(text.encode())}")
+        if not messages:
+            return 0
+        out = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+        print(json.dumps(out, ensure_ascii=False))
+        mailbox.mark(root, name, [m.id for m in messages], "shown", detail)
+    except Exception as exc:  # noqa: BLE001 - see the docstring
+        print(f"courier inbox --hook: {exc!r}", file=sys.stderr)
+    return 0
+
+
+def cmd_inbox(args: argparse.Namespace) -> int:
+    root = state_dir()
+    if args.hook:
+        return inbox_hook(root, args.name)
+    name = args.name or own_name()
+    if name is None:
+        print("courier: no agent name for this pane; pass one: courier inbox NAME", file=sys.stderr)
+        return EXIT_FAILED
+    messages = mailbox.load(root, name)
+    by_id = {m.id: m for m in messages}
+    if unknown := [i for i in args.ack + args.show if i not in by_id]:
+        print(f"courier: no message {unknown[0]} in the mailbox of {name}", file=sys.stderr)
+        return EXIT_FAILED
+    if args.ack:
+        mailbox.mark(root, name, [i for i in args.ack if by_id[i].state != "done"], "done")
+        print(f"done {' '.join(args.ack)}")
+        return 0
+    chosen = (
+        [by_id[i] for i in args.show]
+        if args.show
+        else [m for m in messages if args.all or m.state != "done"]
+    )
+    if args.json:
+        print(
+            json.dumps(
+                [asdict(m) | {"state": m.state} for m in chosen], ensure_ascii=False, indent=2
+            )
+        )
+        return 0
+    if not chosen:
+        print(f"no open messages for {name}")
+    for m in chosen:
+        stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(m.created))
+        print(f"--- {m.id} from {m.source} at {stamp} ({m.state}) ---\n{m.text}\n")
+    return 0
+
+
 def cmd_cancel(args: argparse.Namespace) -> int:
     item = call("POST", "cancel", {"id": args.id})["item"]
     print(f"cancelled {item['id']} to {item['target']}")
@@ -351,6 +441,19 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true")
     p.add_argument("--width", type=int, help="line width (default: the terminal, 62 if unknown)")
     p.set_defaults(func=cmd_panes)
+
+    p = sub.add_parser("inbox", help="messages in an agent's mailbox, and marking them done")
+    p.add_argument("name", nargs="?", help="agent name (default: this pane's herdr agent name)")
+    p.add_argument("--ack", nargs="+", default=[], metavar="ID", help="mark messages done")
+    p.add_argument("--show", nargs="+", default=[], metavar="ID", help="print these in full")
+    p.add_argument("--all", action="store_true", help="include messages already done")
+    p.add_argument("--json", action="store_true")
+    p.add_argument(
+        "--hook",
+        action="store_true",
+        help="read a Claude Code hook payload on stdin and answer with open messages",
+    )
+    p.set_defaults(func=cmd_inbox)
 
     p = sub.add_parser("cancel", help="drop a queued message")
     p.add_argument("id")

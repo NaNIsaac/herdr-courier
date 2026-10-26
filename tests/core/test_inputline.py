@@ -21,6 +21,8 @@ def box(line: str) -> str:
         ("claude_cleared", LineState.EMPTY, ""),
         ("claude_typed", LineState.TYPED, "isaac typing"),
         ("claude_multiline", LineState.TYPED, "isaac typing\n  second line"),
+        ("claude_cursor_on_placeholder", LineState.EMPTY, ""),
+        ("claude_typed_unfocused", LineState.TYPED, "isaac typing"),
     ],
 )
 def test_captured_screens(name, state, text):
@@ -51,6 +53,29 @@ def test_truecolor_with_component_two_is_not_dim():
 def test_partly_dim_counts_as_typed():
     line = classify(box("❯ abc\x1b[2m suggestion tail\x1b[0m"))
     assert line.state is LineState.TYPED
+
+
+@pytest.mark.parametrize(
+    ("line", "text"),
+    [
+        ("❯ isaac typing\x1b[7m \x1b[0m", "isaac typing"),
+        ("❯ \x1b[7mi\x1b[0msaac typing", "isaac typing"),
+        ("❯ isaac \x1b[7mt\x1b[0myping", "isaac typing"),
+        ("❯ \x1b[7mx\x1b[0m", "x"),
+        ("❯ /com\x1b[7mp\x1b[0m\x1b[2mact\x1b[0m", "/compact"),
+        ("❯ \x1b[7mab\x1b[27m\x1b[2mc suggestion\x1b[0m", "abc suggestion"),
+    ],
+)
+def test_typed_text_under_cursor_stays_typed(line, text):
+    got = classify(box(line))
+    assert got.state is LineState.TYPED
+    assert got.text == text
+
+
+def test_cursor_on_dim_placeholder_is_empty():
+    line = classify(box('❯ \x1b[0m\x1b[7mT\x1b[0m\x1b[2mry "refactor <filepath>"\x1b[0m'))
+    assert line.state is LineState.EMPTY
+    assert "placeholder" in line.evidence
 
 
 def test_dialog_without_box_is_unknown():

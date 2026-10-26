@@ -72,8 +72,16 @@ def test_typed_text_under_cursor_stays_typed(line, text):
     assert got.text == text
 
 
-def test_cursor_on_dim_placeholder_is_empty():
-    line = classify(box('❯ \x1b[0m\x1b[7mT\x1b[0m\x1b[2mry "refactor <filepath>"\x1b[0m'))
+@pytest.mark.parametrize(
+    "placeholder",
+    [
+        '❯ \x1b[0m\x1b[7mT\x1b[0m\x1b[2mry "refactor <filepath>"\x1b[0m',
+        "❯ \x1b[7m[\x1b[0m\x1b[2msecretary] suggested next prompt\x1b[0m",
+        "❯ \x1b[7m/\x1b[0m\x1b[2mcompact\x1b[0m",
+    ],
+)
+def test_cursor_on_dim_placeholder_is_empty(placeholder):
+    line = classify(box(placeholder))
     assert line.state is LineState.EMPTY
     assert "placeholder" in line.evidence
 

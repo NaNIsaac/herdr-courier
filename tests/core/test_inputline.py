@@ -121,3 +121,27 @@ def test_box_of_blank_rows_only_is_unknown():
 )
 def test_colour_arguments_are_not_read_as_dim(line, state):
     assert classify(box(line)).state is state
+
+
+# Codex 0.163 draws no rules: the input line sits between two blank rows on a background colour.
+CODEX_EMPTY = (DATA / "codex_empty.ansi").read_text(encoding="utf-8")
+
+
+def test_codex_placeholder_is_empty():
+    line = classify(CODEX_EMPTY)
+    assert line.state is LineState.EMPTY
+    assert "codex" in line.evidence
+
+
+def test_codex_typed_text_is_typed():
+    typed = CODEX_EMPTY.replace(
+        "\x1b[2m\x1b[48;2;35;35;35mAsk Codex to do anything", "\x1b[48;2;35;35;35misaac typing"
+    )
+    line = classify(typed)
+    assert line.state is LineState.TYPED
+    assert line.text == "isaac typing"
+
+
+def test_codex_dialog_option_is_not_the_input_line():
+    dialog = "  Allow this command?\r\n› 1. Yes\r\n  2. No\r\n  Press enter to confirm\r\n"
+    assert classify(dialog).state is LineState.UNKNOWN

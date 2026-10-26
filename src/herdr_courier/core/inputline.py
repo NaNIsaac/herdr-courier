@@ -3,8 +3,10 @@
 Claude Code draws its input box between two horizontal rules, with the first line starting
 with the prompt glyph. Placeholders (tips, "Press up to edit queued messages", suggested next
 prompts) are drawn dim (SGR 2); typed text is drawn without SGR. A plain-text read cannot tell
-the two apart. Anything that does not look like that box is UNKNOWN, so a renderer change or an
-unrecognised dialog makes the dispatcher wait instead of typing into it.
+the two apart. The cursor can be drawn as one reverse-video cell (SGR 7) over the first character
+of a placeholder, so that one cell is not dim. Anything that does not look like that box is
+UNKNOWN, so a renderer change or an unrecognised dialog makes the dispatcher wait instead of
+typing into it.
 """
 
 import re
@@ -30,28 +32,37 @@ class InputLine:
     evidence: str
 
 
-def _styled(line: str) -> list[tuple[str, bool]]:
-    """Characters of one line paired with whether they are drawn dim."""
-    out: list[tuple[str, bool]] = []
-    dim = False
+@dataclass(frozen=True)
+class _Style:
+    dim: bool = False
+    reverse: bool = False
+
+
+def _styled(line: str) -> list[tuple[str, _Style]]:
+    """Characters of one line paired with how they are drawn."""
+    out: list[tuple[str, _Style]] = []
+    style = _Style()
     pos = 0
     for m in SGR.finditer(line):
-        out += [(c, dim) for c in OTHER_ESCAPE.sub("", line[pos : m.start()])]
-        dim = _apply_sgr(m.group(1), dim)
+        out += [(c, style) for c in OTHER_ESCAPE.sub("", line[pos : m.start()])]
+        style = _apply_sgr(m.group(1), style)
         pos = m.end()
-    out += [(c, dim) for c in OTHER_ESCAPE.sub("", line[pos:])]
+    out += [(c, style) for c in OTHER_ESCAPE.sub("", line[pos:])]
     return out
 
 
-def _apply_sgr(params: str, dim: bool) -> bool:
-    """Whether text is dim after one SGR sequence, skipping colour arguments."""
+def _apply_sgr(params: str, style: _Style) -> _Style:
+    """Style after one SGR sequence, skipping colour arguments."""
+    dim, reverse = style.dim, style.reverse
     groups = params.split(";")
     i = 0
     while i < len(groups):
         head = groups[i].split(":")[0] or "0"
         if ":" in groups[i]:
             # Colon form (38:2::R:G:B, 4:3) carries its own arguments in the same group.
-            if head in ("0", "22"):
+            if head == "0":
+                dim = reverse = False
+            elif head == "22":
                 dim = False
             i += 1
             continue
@@ -60,12 +71,26 @@ def _apply_sgr(params: str, dim: bool) -> bool:
             mode = groups[i + 1] if i + 1 < len(groups) else ""
             i += 5 if mode == "2" else 3 if mode == "5" else 2
             continue
-        if head in ("0", "22"):
+        if head == "0":
+            dim = reverse = False
+        elif head == "22":
             dim = False
         elif head == "2":
             dim = True
+        elif head == "7":
+            reverse = True
+        elif head == "27":
+            reverse = False
         i += 1
-    return dim
+    return _Style(dim, reverse)
+
+
+def _placeholder(ink: list[_Style]) -> bool:
+    """All ink dim, allowing one reverse cursor cell on the first character."""
+    if ink and ink[0].reverse and not ink[0].dim and not any(s.reverse for s in ink[1:]):
+        # A lone cursor cell with nothing after it may be a typed character.
+        ink = ink[1:]
+    return bool(ink) and all(s.dim for s in ink)
 
 
 def _plain(line: str) -> str:
@@ -90,12 +115,12 @@ def classify(screen: str) -> InputLine:
     start = next(i for i, (c, _) in enumerate(first) if c == PROMPT) + 1
     chars = first[start:]
     for ln in body[1:]:
-        chars += [("\n", False), *_styled(ln)]
+        chars += [("\n", _Style()), *_styled(ln)]
     text = "".join(c for c, _ in chars).strip()
-    ink = [dim for c, dim in chars if not c.isspace()]
+    ink = [style for c, style in chars if not c.isspace()]
     if not ink:
         return InputLine(LineState.EMPTY, "", "prompt line blank")
-    if all(ink):
+    if _placeholder(ink):
         return InputLine(LineState.EMPTY, "", f"dim placeholder {text[:60]!r}")
     return InputLine(LineState.TYPED, text, f"typed {text[:60]!r}")
 

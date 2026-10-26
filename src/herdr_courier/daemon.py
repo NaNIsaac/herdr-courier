@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from . import ovis
+from . import mailbox, ovis
 from .config import ConfigError, config_path, load
 from .core.queue import Dispatcher, DispatchError, WrongServer
 from .core.transport import CliHerdr, HerdrError, PaneHerdr, same_socket
@@ -91,11 +91,13 @@ class DispatchService:
         root: Path,
         tick: float = TICK,
         lock: InstanceLock | None = None,
+        mailbox: bool = False,
     ) -> None:
         self.dispatcher = dispatcher
         self.root = root
         self.tick = tick
         self.lock = lock
+        self.mailbox = mailbox
         self.token = secrets.token_urlsafe(24)
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -216,6 +218,12 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
             item = run(
                 lambda: d.enqueue(target, text, source=source, human=human, client_id=client_id)
             )
+            if service.mailbox:
+                try:
+                    mailbox.add(service.root, item)
+                except OSError as exc:
+                    # The mailbox is a second copy; the queued item is delivered either way.
+                    print(f"courier serve: mailbox copy of {item.id} not written: {exc}")
             return {"item": asdict(item), "server": d.server}
         case "POST", "wait":
             item_id = _text(body, "id", 1, 32)
@@ -393,7 +401,7 @@ def serve(args: argparse.Namespace) -> int:
         lock.release()
         print(f"courier serve: {exc}", file=sys.stderr)
         return 1
-    service = DispatchService(dispatcher, root, args.tick, lock)
+    service = DispatchService(dispatcher, root, args.tick, lock, config.mailbox.write)
     server = Server(service, args.port)
     port = server.server_address[1]
     service.start(port)
@@ -406,6 +414,8 @@ def serve(args: argparse.Namespace) -> int:
             f"between turns only, while Ovis answers at {config.ovis.url}: "
             f"{', '.join(config.ovis.panes)} (settle {config.ovis.settle:g} s)"
         )
+    if config.mailbox.write:
+        print(f"mailbox copy of every queued message in {mailbox.mailbox_dir(root)}")
     try:
         server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:

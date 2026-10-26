@@ -1,9 +1,13 @@
+import http.client
+import json
+import threading
 from dataclasses import dataclass, field
 
 import pytest
 
 from herdr_courier.core.queue import Dispatcher
 from herdr_courier.core.transport import HerdrError
+from herdr_courier.daemon import DispatchService, Server
 
 RULE = "\x1b[0m\x1b[38;2;136;136;136m" + "─" * 40 + "\x1b[0m"
 DIM_GLYPH = "\x1b[0m\x1b[38;2;153;153;153m❯ \x1b[0m"
@@ -131,3 +135,45 @@ def run(clock):
         dispatcher.tick()
 
     return advance
+
+
+@pytest.fixture
+def start(tmp_path, monkeypatch):
+    """Start the dispatcher on a free port with a fake herdr; courier finds it through COURIER_STATE_DIR."""
+    monkeypatch.setenv("COURIER_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr("herdr_courier.core.gate.DEBOUNCE", 0.1)
+    running = []
+
+    def go(herdr, *, enabled=True, tick=0.05, server=None, mailbox=False):
+        dispatcher = (
+            Dispatcher(herdr, tmp_path / "journal.jsonl", log=lambda _: None, server=server)
+            if enabled
+            else None
+        )
+        service = DispatchService(dispatcher, tmp_path, tick=tick, mailbox=mailbox)
+        server = Server(service)
+        service.start(server.server_address[1])
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
+        thread.start()
+        running.append((server, service, thread))
+        return server, service
+
+    yield go
+    for server, service, thread in running:
+        server.shutdown()
+        server.server_close()
+        service.stop()
+        thread.join(timeout=5)
+
+
+def call(server, method, path, body=None, token=None, host="127.0.0.1", raw=None):
+    conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=10)
+    headers = {"Host": host, "Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    data = raw if raw is not None else (None if body is None else json.dumps(body))
+    conn.request(method, path, body=data, headers=headers)
+    resp = conn.getresponse()
+    payload = json.loads(resp.read() or b"{}")
+    conn.close()
+    return resp.status, payload

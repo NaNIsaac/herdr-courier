@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Mailbox, off by default (`mailbox.write`, `mailbox.readers`): courier serve also appends each
+  queued message to `mailbox/<target>.jsonl` with the journal's id, and `courier inbox` lists the
+  messages, prints them in full and marks them done. `courier inbox --hook` answers a Claude Code
+  UserPromptSubmit or SessionStart hook with the open messages as additional context. Typing
+  into panes is unchanged. See docs/mailbox.md.
+- `courier send` warns when the text starts with `C:/Program Files/Git/`, which is what Git Bash
+  makes of a leading `/` such as `/effort`.
 - Messages for the agents in `ovis.panes` (default `secretary`) go only between turns while Ovis
   answers at `ovis.url`: never while the agent works, and only after its state has stayed
   unchanged for `ovis.settle` seconds (default 3). A prompt delivered during a turn started the

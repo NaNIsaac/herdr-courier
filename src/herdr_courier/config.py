@@ -35,14 +35,21 @@ class Ovis:
 
 
 @dataclass(frozen=True)
+class Mailbox:
+    write: bool = defaults.MAILBOX_WRITE
+    readers: tuple[str, ...] = defaults.MAILBOX_READERS
+
+
+@dataclass(frozen=True)
 class Config:
     panes: Panes = Panes()
     doctor: Doctor = Doctor()
     ovis: Ovis = Ovis()
+    mailbox: Mailbox = Mailbox()
     path: Path | None = None
 
 
-SECTIONS = {"panes": Panes, "doctor": Doctor, "ovis": Ovis}
+SECTIONS = {"panes": Panes, "doctor": Doctor, "ovis": Ovis, "mailbox": Mailbox}
 
 
 def config_path(root: Path | None = None) -> Path:
@@ -78,6 +85,9 @@ def _section(path: Path, name: str, cls: type, table: Any):
                 raise ConfigError(f"{path}: {name}.{key} must be a string")
             if key.endswith("separator") and not value:
                 raise ConfigError(f"{path}: {name}.{key} must not be empty")
+        elif known[key].type is bool:
+            if not isinstance(value, bool):
+                raise ConfigError(f"{path}: {name}.{key} must be true or false")
         elif known[key].type is float:
             if (
                 isinstance(value, bool)

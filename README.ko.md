@@ -207,6 +207,7 @@ hold, 지난 한 시간의 실패, journal, 설정 파일, pane에 입력하는 
 | `courier agents [--wide] [--json] [--width N] [--color[=WHEN]]` | pane별 탭, 에이전트, 상태, 큐 |
 | `courier panes [--json] [--width N]` | 탭별 pane과 라벨, 작업 폴더 |
 | `courier doctor [--json] [--width N]` | 읽기 전용 상태 점검 |
+| `courier inbox [NAME] [--ack ID...] [--show ID...] [--all] [--json] [--hook]` | 에이전트의 우편함, 기본은 꺼짐 ([docs/mailbox.md](docs/mailbox.md)) |
 
 `--width` 기본값은 터미널 폭이고, 알 수 없으면 62입니다. `--source`와 `--owner` 기본값은
 `COURIER_SOURCE`, 없으면 부른 pane의 `HERDR_PANE_ID`입니다.
@@ -235,7 +236,7 @@ herdr agent prompt boss "[lane] status report"
 상태 폴더는 Windows에서 `%LOCALAPPDATA%\herdr-courier`, 그 밖에서는
 `$XDG_STATE_HOME/herdr-courier`(`~/.local/state/herdr-courier`)이며 `COURIER_STATE_DIR`로 옮길 수
 있습니다. 사용자의 `config.toml`과 데몬의 `journal.jsonl`, `lock`, `endpoint.json`(포트와 접근
-토큰)이 들어 있습니다. 0.1의 상태 폴더(`herdr-console`)는 데몬이 처음 뜰 때 새 이름으로 옮깁니다.
+토큰)이 들어 있고, `mailbox.write`를 켜면 `mailbox/<target>.jsonl`과 `mailbox/hook.log`도 생깁니다. 0.1의 상태 폴더(`herdr-console`)는 데몬이 처음 뜰 때 새 이름으로 옮깁니다.
 
 ### 설정
 
@@ -254,6 +255,8 @@ herdr agent prompt boss "[lane] status report"
 | `ovis.url` | `"http://127.0.0.1:7317"` | Ovis 상태 경로. `""`이면 Ovis 없음 |
 | `ovis.panes` | `["secretary"]` | Ovis가 응답하는 동안 이 에이전트에게 가는 메시지는 턴 사이에만 보냄 |
 | `ovis.settle` | `3.0` | 턴이 끝난 뒤 에이전트 상태가 이 초 동안 그대로여야 그런 메시지를 보냄 |
+| `mailbox.write` | `false` | 데몬이 큐에 넣는 모든 메시지를 우편함에도 남김 |
+| `mailbox.readers` | `[]` | `courier inbox --hook`이 열린 메시지를 돌려주는 에이전트 |
 
 ## 동작 방식
 

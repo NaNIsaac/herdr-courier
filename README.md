@@ -209,6 +209,7 @@ check fails. `status` shows every queue and hold and what the daemon last saw in
 | `courier agents [--wide] [--json] [--width N] [--color[=WHEN]]` | panes with tab, agent, status and queue |
 | `courier panes [--json] [--width N]` | panes by tab with label and working directory |
 | `courier doctor [--json] [--width N]` | read-only health check |
+| `courier inbox [NAME] [--ack ID...] [--show ID...] [--all] [--json] [--hook]` | an agent's mailbox, off by default ([docs/mailbox.md](docs/mailbox.md)) |
 
 `--width` defaults to the terminal width, or 62 when it cannot tell. `--source` and `--owner`
 default to `COURIER_SOURCE`, then to the calling pane's `HERDR_PANE_ID`.
@@ -237,7 +238,8 @@ herdr agent prompt boss "[lane] status report"
 The state directory is `%LOCALAPPDATA%\herdr-courier` on Windows and
 `$XDG_STATE_HOME/herdr-courier` (`~/.local/state/herdr-courier`) elsewhere; `COURIER_STATE_DIR`
 moves it. It holds your `config.toml` and the daemon's `journal.jsonl`, `lock` and
-`endpoint.json` (port and access token). The daemon moves a 0.1 state directory (`herdr-console`)
+`endpoint.json` (port and access token), and with `mailbox.write` on, `mailbox/<target>.jsonl`
+and `mailbox/hook.log`. The daemon moves a 0.1 state directory (`herdr-console`)
 to the new name on its first start.
 
 ### Configuration
@@ -257,6 +259,8 @@ keys you change. An unknown key or a wrong type is an error, which `courier doct
 | `ovis.url` | `"http://127.0.0.1:7317"` | Ovis health route; `""` means no Ovis |
 | `ovis.panes` | `["secretary"]` | while Ovis answers, messages for these agents go only between turns |
 | `ovis.settle` | `3.0` | seconds the agent state must stay unchanged after a turn before such a message goes |
+| `mailbox.write` | `false` | the daemon also keeps a mailbox copy of every queued message |
+| `mailbox.readers` | `[]` | agents whose `courier inbox --hook` returns their open messages |
 
 ## How it works
 

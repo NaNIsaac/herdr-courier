@@ -7,6 +7,11 @@ the two apart. The cursor can be drawn as one reverse-video cell (SGR 7) over th
 of a placeholder, so that one cell is not dim. Anything that does not look like that box is
 UNKNOWN, so a renderer change or an unrecognised dialog makes the dispatcher wait instead of
 typing into it.
+
+Codex draws no rules. Its input is a line starting with "›", padded above and below by a blank
+row with a background colour (SGR 48), and its placeholder ("Ask Codex to do anything") is dim.
+The same "›" marks the selected option of a dialog, but there the rows around it are not blank
+padding, so only a flanked line counts as the input line.
 """
 
 import re
@@ -17,6 +22,8 @@ SGR = re.compile(r"\x1b\[([0-9;:]*)m")
 OTHER_ESCAPE = re.compile(r"\x1b\[[0-9;?:]*[A-Za-ln-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 RULE = "─" * 8
 PROMPT = "❯"
+CODEX_PROMPT = "›"
+BACKGROUND = re.compile(r"\x1b\[(?:[0-9;:]*;)?(?:48|4[0-7]|10[0-7])[;:m]")
 
 
 class LineState(StrEnum):
@@ -97,12 +104,45 @@ def _plain(line: str) -> str:
     return SGR.sub("", OTHER_ESCAPE.sub("", line))
 
 
+def _padding(raw: str, plain: str) -> bool:
+    """A blank row drawn on a background colour."""
+    return not plain.strip() and bool(BACKGROUND.search(raw))
+
+
+def _classify_codex(lines: list[str], plain: list[str]) -> InputLine:
+    for at in range(len(lines) - 2, 0, -1):
+        if not plain[at].lstrip().startswith(CODEX_PROMPT) or not _padding(
+            lines[at - 1], plain[at - 1]
+        ):
+            continue
+        end = next((i for i in range(at + 1, len(lines)) if _padding(lines[i], plain[i])), None)
+        if end is None:
+            continue
+        first = _styled(lines[at])
+        start = next(i for i, (c, _) in enumerate(first) if c == CODEX_PROMPT) + 1
+        chars = first[start:]
+        for ln in lines[at + 1 : end]:
+            chars += [("\n", _Style()), *_styled(ln)]
+        text = "".join(c for c, _ in chars).strip()
+        ink = [style for c, style in chars if not c.isspace()]
+        if not ink:
+            return InputLine(LineState.EMPTY, "", "codex prompt line blank")
+        if _placeholder(ink):
+            return InputLine(LineState.EMPTY, "", f"codex dim placeholder {text[:60]!r}")
+        return InputLine(LineState.TYPED, text, f"codex typed {text[:60]!r}")
+    return InputLine(
+        LineState.UNKNOWN,
+        "",
+        f"no input box (no rules, no {CODEX_PROMPT} line between padding rows)",
+    )
+
+
 def classify(screen: str) -> InputLine:
     lines = screen.splitlines()
     plain = [_plain(ln) for ln in lines]
     rules = [i for i, ln in enumerate(plain) if ln.strip().startswith(RULE)]
     if len(rules) < 2:
-        return InputLine(LineState.UNKNOWN, "", "no input box (fewer than two rules)")
+        return _classify_codex(lines, plain)
     top, bottom = rules[-2], rules[-1]
     # Blank rows under the top rule hold no input; some consoles redraw with one there.
     while top + 1 < bottom and not plain[top + 1].strip():

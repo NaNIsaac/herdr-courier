@@ -7,7 +7,6 @@ once the message is queued; with ``--wait`` it waits for delivery and then, like
 
 import argparse
 import io
-from importlib.metadata import PackageNotFoundError, version
 import json
 import os
 import subprocess
@@ -16,6 +15,7 @@ import time
 import urllib.parse
 import uuid
 from dataclasses import asdict
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, NoReturn
 

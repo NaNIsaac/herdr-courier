@@ -216,7 +216,14 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
             text = _text(body, "text", 1, 20_000)
             source = _text(body, "source", 0, 64, "unknown")
             item = run(
-                lambda: d.enqueue(target, text, source=source, human=human, client_id=client_id)
+                lambda: d.send_task(
+                    target,
+                    text,
+                    source=source,
+                    human=human,
+                    client_id=client_id,
+                    task=body.get("task"),
+                )
             )
             if service.mailbox:
                 try:
@@ -225,6 +232,9 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
                     # The mailbox is a second copy; the queued item is delivered either way.
                     print(f"courier serve: mailbox copy of {item.id} not written: {exc}")
             return {"item": asdict(item), "server": d.server}
+        case "GET", "await/list":
+            with d.lock:
+                return {"tasks": [dict(t) for t in d.tasks.values()]}
         case "POST", "wait":
             item_id = _text(body, "id", 1, 32)
             timeout = _number(body, "timeout", 60, 0, 300)

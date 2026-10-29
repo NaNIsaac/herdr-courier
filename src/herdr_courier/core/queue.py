@@ -15,6 +15,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from .. import ledger
 from .gate import Observation, check
 from .inputline import InputLine, LineState, classify, holds
 from .transport import Herdr, HerdrError, same_socket
@@ -70,6 +71,7 @@ class Item:
     verify_until: float = 0.0
     client_id: str | None = None
     terminal: str | None = None
+    task: dict | None = None
     # Wall time after which a held item fails. An item held for a missing agent has no pane
     # (pane_id "") until the agent is back.
     held_until: float | None = None
@@ -165,7 +167,9 @@ class Dispatcher:
         self.missing: dict[str, Missing] = {}
         # The session each agent in hold_missing last had, for messages queued while it is gone.
         self.seen: dict[str, str | None] = {}
+        self.tasks: dict[str, dict] = {}
         self._replay()
+        self._pending_tasks()
         if server:
             self._journal({"event": "server", "socket": server})
 
@@ -178,6 +182,7 @@ class Dispatcher:
         human: bool = False,
         client_id: str | None = None,
         hold: bool = True,
+        task: dict | None = None,
     ) -> Item:
         """Queue ``text`` for ``target``. ``hold=False`` refuses instead of holding it for a
         missing agent, so courier's own summaries never wait on one another."""
@@ -206,13 +211,17 @@ class Dispatcher:
             created=time.time(),
             client_id=client_id,
             terminal=agent.get("terminal_id"),
+            task=task,
         )
         with self.lock:
             # A retried request may have raced the first one while the target was resolved.
             if client_id and (known := self._by_client_id(client_id)):
                 return known
             self._record(item, "queued", full=True)
+            item.task = None
             self.items[item.id] = item
+            if task is not None:
+                self.tasks[task["key"]] = task
             queue = self.queues.setdefault(item.pane_id, [])
             if human:
                 # Human messages go ahead of queued agent traffic but behind an in-flight one.
@@ -224,6 +233,118 @@ class Dispatcher:
                 queue.append(item.id)
             self.lock.notify_all()
         return item
+
+    def send_task(
+        self, target: str, text: str, *, source: str, client_id=None, human=False, task=None
+    ) -> Item:
+        with self.lock:
+            if client_id and (known := self._by_client_id(client_id)):
+                return known
+            if task is not None:
+                try:
+                    task = ledger.new(
+                        task["key"],
+                        source,
+                        target,
+                        task["evidence"],
+                        **{
+                            k: task[k]
+                            for k in (
+                                "due",
+                                "repo",
+                                "branch",
+                                "cwd",
+                                "needs_approval",
+                                "approval_ref",
+                            )
+                            if k in task
+                        },
+                    )
+                except (ValueError, KeyError, TypeError) as exc:
+                    raise DispatchError(str(exc)) from exc
+                if task["key"] in self.tasks:
+                    raise DispatchError(f"task already exists: {task['key']}")
+            item = self.enqueue(
+                target, text, source=source, human=human, client_id=client_id, task=task
+            )
+            self._task_report(source, text)
+            return item
+
+    def _task_record(self, task: dict) -> None:
+        self._journal({"event": "task", "task": task})
+
+    def _task_report(self, source: str, text: str) -> None:
+        import re
+
+        report = re.search(r"(?:^|\s)(DONE|READY|BLOCKED|FAILED)\s+(\S+)", text)
+        if not report or (task := self.tasks.get(report[2])) is None:
+            return
+        try:
+            source = self.herdr.agent_get(source).get("name") or source
+        except HerdrError:
+            pass
+        if source != task["to"]:
+            self.log(f"ignored {report[1]} {report[2]} from non-owner {source}")
+            return
+        if task["state"] not in {"OPEN", "VERIFYING"}:
+            return
+        state = "VERIFYING" if report[1] in {"DONE", "READY"} else report[1]
+        if state == task["state"]:
+            return
+        task["state"] = state
+        self._task_record(task)
+        if state in {"FAILED", "BLOCKED"}:
+            self._task_flag(task, state, f"{state} {task['key']}: {text}")
+
+    def _task_flag(self, task: dict, reason: str, text: str) -> None:
+        if reason in task["flags"]:
+            return
+        try:
+            self.enqueue(task["from"], text, source="courier", hold=False)
+        except DispatchError as exc:
+            self.log(f"task flag not queued: {exc}")
+            return
+        task["flags"].append(reason)
+        self._task_record(task)
+
+    def check_tasks(self) -> None:
+        with self.lock:
+            now = ledger.time.time()
+            names = ledger.role_names()
+            for task in self.tasks.values():
+                if task["state"] not in {"OPEN", "VERIFYING"}:
+                    continue
+                due = task.get("due")
+                if due is not None:
+                    for n in (1, 2):
+                        if now >= task["sent"] + n * (due - task["sent"]):
+                            self._task_flag(task, f"overdue-{n}", f"OVERDUE {task['key']} {n}x")
+                if now - task["sent"] > 7 * 86400 or (
+                    names is not None and task["to"] not in names
+                ):
+                    self._task_flag(task, "stale", f"STALE {task['key']}")
+
+    def _pending_tasks(self) -> None:
+        path = self.journal.parent / "pending-dispatch.jsonl"
+        if not path.exists():
+            return
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            try:
+                task = json.loads(raw)
+                task = ledger.new(
+                    task["key"],
+                    task["from"],
+                    task["to"],
+                    task["evidence"],
+                    **{k: v for k, v in task.items() if k not in {"key", "from", "to", "evidence"}},
+                )
+            except (ValueError, KeyError, TypeError):
+                continue
+            if task["key"] not in self.tasks:
+                task["note"] = "manual"
+                self.tasks[task["key"]] = task
+                self._task_record(task)
+        path.rename(path.with_name(f"pending-dispatch.{uuid.uuid4().hex}.replayed.jsonl"))
 
     def _enqueue_held(
         self, target: str, text: str, source: str, human: bool, client_id: str | None
@@ -388,6 +509,8 @@ class Dispatcher:
             return {"panes": panes, "held": held, "recent": [asdict(i) for i in finished]}
 
     def tick(self) -> None:
+        if self.tasks:
+            self.check_tasks()
         with self.lock:
             now = self.clock()
             for pane_id, hold in list(self.holds.items()):
@@ -792,6 +915,7 @@ class Dispatcher:
                 entry = json.loads(raw)
             except ValueError:
                 continue
+            ledger.apply(self.tasks, entry)
             match entry.get("event"):
                 case "server":
                     bound = entry.get("socket")
@@ -803,6 +927,7 @@ class Dispatcher:
                     data = entry["item"]
                     data["state"] = State(data["state"])
                     items[entry["id"]] = Item(**data)
+                    items[entry["id"]].task = None
                 case "item" if entry["id"] in items:
                     item = items[entry["id"]]
                     item.state = State(entry["state"])
@@ -834,6 +959,8 @@ class Dispatcher:
                 "own COURIER_STATE_DIR."
             )
         self._close_generation()
+        for task in self.tasks.values():
+            self._task_record(task)
         for pane_id, entry in holds.items():
             until_wall = entry.get("until_wall")
             if until_wall is not None and until_wall <= now_wall:

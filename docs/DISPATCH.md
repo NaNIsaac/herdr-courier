@@ -104,11 +104,34 @@ All of these, observed again right before writing (a second `agent get` and box 
    1 s in a row (3 s when the pane is focused). No recognisable box, as with a dialog that herdr
    reports as idle, waits.
 3. No hold on the pane (`courier hold`).
-4. The pane still runs the agent session the message was queued for; a different or missing
-   session fails the item instead of delivering it to someone else. A message queued for an agent
-   with no session is tied to the pane's `terminal_id` instead and fails when the pane has a new
-   terminal (the pane or the server restarted). Names are resolved once, when the message is
-   queued: a name that moves to another pane does not take the message along.
+4. The pane still runs the agent session the message was queued for; a different session fails
+   the item instead of delivering it to someone else. A pane that shows no session may be the same
+   agent restarting, so the item waits (`hold: identity_changed: ...`) for that session to come
+   back, for at most `hold.ttl` (4 h), and then fails. A message queued for an agent with no
+   session is tied to the pane's `terminal_id` instead and fails when the pane has a new terminal
+   (the pane or the server restarted). Names are resolved once, when the message is queued: a
+   name that moves to another pane does not take the message along, except for the agents below.
+
+## Agents held while missing
+
+For the agents in `hold.when_missing` (default `boss` and `secretary`) courier holds instead of
+refusing or failing:
+
+- A message for one that herdr does not know is held (`hold: boss missing since 13:20`) instead
+  of refused, and `courier send` prints `held <id>`. A queued message whose pane is gone, shows no
+  session or runs another session is held the same way, by name.
+- Every 5 s courier looks the name up. When it is back with the session the messages were queued
+  for (a resume, in any pane), the 10 oldest are queued to it and, if more are held, one line
+  `courier: N more held for you: courier inbox` follows them. Back with another session, nothing
+  is typed in; the held messages stay in `courier status` and, with the mailbox on, in
+  `courier inbox`. A pane without a session counts as missing.
+- A held message fails after `hold.ttl` seconds (4 h).
+- While messages are held, the agent named in `hold.summary_to` (boss for secretary, secretary
+  for boss) gets one summary, such as `courier: boss missing since 13:20; held 3 (design 2,
+  icc 1); oldest 13:21`: at once, then at most every `hold.summary_every` seconds (15 min) while
+  the count changes, and once when the agent is back. Failed ones are counted in the next one.
+  Nothing is sent while that agent is missing too, and summaries are never held themselves.
+- Held messages and their deadlines are journalled and still held after a restart.
 5. For an agent named in `ovis.panes`, while Ovis answers its health route (asked at most every
    30 s): the agent is not `working`, and its state (status and herdr's `state_change_seq`) has
    not changed for `ovis.settle` seconds, 3 by default. A queued Ovis message goes out within

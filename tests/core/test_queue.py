@@ -3,7 +3,14 @@ import time
 
 import pytest
 
-from herdr_courier.core.queue import JOURNAL_KEEP, MAX_ATTEMPTS, Dispatcher, DispatchError, State
+from herdr_courier.core.queue import (
+    HOLD_TTL,
+    JOURNAL_KEEP,
+    MAX_ATTEMPTS,
+    Dispatcher,
+    DispatchError,
+    State,
+)
 
 
 def test_waits_while_human_is_typing_and_never_merges(herdr, make_dispatcher, run):
@@ -407,14 +414,44 @@ def test_final_check_sees_a_dialog_that_opened_after_the_gate(
     assert item.reason.startswith("agent blocked")
 
 
-def test_lost_session_counts_as_identity_change(herdr, make_dispatcher, run):
+def test_lost_session_holds_until_the_same_session_is_back(herdr, make_dispatcher, run):
     pane = herdr.add("w1:p1")
     d = make_dispatcher()
     item = d.enqueue("w1:p1", "hello", source="t")
     pane.session = None
+    run(d, 60)
+    assert item.state is State.WAITING
+    assert item.reason == "hold: identity_changed: no session, waiting for s1"
+    assert pane.submit_calls == 0
+    pane.session = "s1"
     run(d, 3)
+    assert item.state is State.SENT
+    assert pane.submitted == ["hello"]
+
+
+def test_lost_session_fails_when_the_hold_runs_out(herdr, make_dispatcher, run, clock):
+    pane = herdr.add("w1:p1")
+    d = make_dispatcher()
+    item = d.enqueue("w1:p1", "hello", source="t")
+    pane.session = None
+    run(d, 2)
+    clock.now += HOLD_TTL
+    run(d, 1)
     assert item.state is State.FAILED
-    assert item.reason.startswith("identity_changed")
+    assert item.reason.startswith("hold expired: identity_changed")
+    assert pane.submit_calls == 0
+
+
+def test_lost_session_then_another_session_fails(herdr, make_dispatcher, run):
+    pane = herdr.add("w1:p1")
+    d = make_dispatcher()
+    item = d.enqueue("w1:p1", "hello", source="t")
+    pane.session = None
+    run(d, 2)
+    pane.session = "s2"
+    run(d, 2)
+    assert item.state is State.FAILED
+    assert item.reason == "identity_changed: session s2 is not s1"
     assert pane.submit_calls == 0
 
 

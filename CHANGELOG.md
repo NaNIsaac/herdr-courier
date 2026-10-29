@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- A message for an agent whose pane shows no session is held for up to 4 h (`hold.ttl`) and
+  delivered when the same session is back, instead of failing at once with `identity_changed`.
+  Another session still fails it.
+- Agents held while missing (`[hold]`, default `boss` and `secretary`): a message for one that
+  herdr does not know, or whose pane is gone or lost its session, is held by name instead of
+  refused or failed. When it is back with the same session the 10 oldest are typed in, then one
+  line about the rest; with another session they stay held. The other agent of the pair gets one
+  summary of what is held, at most every 15 min. `courier status` lists held messages by name.
+  See docs/DISPATCH.md.
+
 - Mailbox, off by default (`mailbox.write`, `mailbox.readers`): courier serve also appends each
   queued message to `mailbox/<target>.jsonl` with the journal's id, and `courier inbox` lists the
   messages, prints them in full and marks them done. `courier inbox --hook` answers a Claude Code

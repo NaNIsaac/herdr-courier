@@ -118,7 +118,9 @@ def clock() -> FakeClock:
 @pytest.fixture
 def make_dispatcher(herdr, clock, tmp_path):
     def make() -> Dispatcher:
-        return Dispatcher(herdr, tmp_path / "journal.jsonl", clock=clock, log=lambda _: None)
+        return Dispatcher(
+            herdr, tmp_path / "journal.jsonl", clock=clock, wall=clock, log=lambda _: None
+        )
 
     return make
 

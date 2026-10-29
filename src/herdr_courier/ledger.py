@@ -126,10 +126,15 @@ def read(path: Path) -> dict:
     return tasks
 
 
+def generation_order(path: Path) -> tuple[str, int]:
+    match = re.search(r"\.(\d{8}T\d{6}Z)(?:-(\d+))?\.jsonl$", path.name)
+    if match is None:
+        raise ValueError(f"invalid journal generation name: {path.name}")
+    return match[1], int(match[2] or 0)
+
+
 def history(path: Path):
-    generations = sorted(
-        path.parent.glob(f"{path.stem}.[0-9]*.jsonl"), key=lambda p: p.stat().st_mtime_ns
-    )
+    generations = sorted(path.parent.glob(f"{path.stem}.[0-9]*.jsonl"), key=generation_order)
     readable = False
     for candidate in [*generations, path]:
         try:

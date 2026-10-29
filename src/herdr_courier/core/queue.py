@@ -12,12 +12,13 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from .. import ledger, mailbox
+from .. import ledger, mailbox, probes
 from .gate import Observation, check
 from .inputline import InputLine, LineState, classify, holds
 from .transport import Herdr, HerdrError, same_socket
@@ -425,6 +426,60 @@ class Dispatcher:
             self.ledger_notices[name] = notice
             self._journal({"event": "ledger-notice", **notice})
         self._flush_task_notices()
+
+    def flag_task(self, key: str, reason: str) -> dict:
+        with self.lock:
+            task = self.tasks.get(key)
+            if task is None or task["state"] not in {"OPEN", "VERIFYING"}:
+                raise DispatchError("no open or verifying task")
+            day = int(ledger.time.time() // 86400)
+            digest = hashlib.sha256(reason.encode()).hexdigest()
+            flags = task.setdefault("probe_flags", {})
+            if flags.get(digest) == day:
+                return dict(task)
+            try:
+                self.enqueue(task["from"], f"VERIFY {key}: {reason}", source="courier", hold=False)
+            except DispatchError as exc:
+                self.log(f"probe flag not queued: {exc}")
+                return dict(task)
+            flags[digest] = day
+            self._task_record(task)
+            return dict(task)
+
+    def close_task(self, key: str, *, by: str, evidence: str, max_probes=100) -> dict:
+        with self.lock:
+            task = self.tasks.get(key)
+            if task is None:
+                raise DispatchError("no task")
+            if by != "probe":
+                raise DispatchError("close requires --by probe")
+            if task["state"] == "DONE":
+                return dict(task)
+            if task["state"] not in {"OPEN", "VERIFYING"}:
+                raise DispatchError("task is not open or verifying")
+            snapshot = deepcopy(task)
+        result = probes.check(snapshot, max_probes=max_probes)
+        with self.lock:
+            task = self.tasks.get(key)
+            fields = ("attempts", "to", "state", "sent", "evidence", "cwd")
+            if task is None or any(task.get(field) != snapshot.get(field) for field in fields):
+                raise DispatchError("task changed during probe; defer until next verification pass")
+            if not result["ok"]:
+                self.flag_task(key, result["reason"])
+                raise DispatchError(result["reason"])
+            if task["state"] == "OPEN" and not probes.log_report(result):
+                self.flag_task(key, "artifact found, no report")
+                raise DispatchError("artifact found, no report")
+            task = deepcopy(task)
+            task["state"] = "DONE"
+            task["ended"] = ledger.time.time()
+            kinds = list(dict.fromkeys(item["kind"] for item in result["results"]))
+            task["closed_by"] = "probe " + ",".join(kinds)
+            task["probe_results"] = result["results"]
+            task["close_note"] = evidence
+            self._task_record(task)
+            self.tasks[key] = task
+            return dict(task)
 
     def _task_capacity(self, key: str) -> None:
         if key in self.tasks and "sha" not in self.tasks[key]:
@@ -1179,13 +1234,13 @@ class Dispatcher:
         stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
         stem = self.journal.stem
         dest = self.journal.with_name(f"{stem}.{stamp}.jsonl")
-        n = 1
-        while dest.exists():
+        siblings = list(self.journal.parent.glob(f"{stem}.{stamp}*.jsonl"))
+        if siblings:
+            n = max(ledger.generation_order(path)[1] for path in siblings) + 1
             dest = self.journal.with_name(f"{stem}.{stamp}-{n}.jsonl")
-            n += 1
         self.journal.replace(dest)
         for old in sorted(
-            self.journal.parent.glob(f"{stem}.[0-9]*.jsonl"), key=lambda p: p.stat().st_mtime_ns
+            self.journal.parent.glob(f"{stem}.[0-9]*.jsonl"), key=ledger.generation_order
         )[:-JOURNAL_KEEP]:
             old.unlink(missing_ok=True)
 

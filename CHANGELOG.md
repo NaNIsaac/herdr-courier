@@ -2,13 +2,19 @@
 
 ## Unreleased
 
+- Objective file/hash, exact-log, and PR probes through `await verify` and `await close --by
+  probe`. A manual foreground `--watch` defaults to 600 s and 100 probes, including closing
+  rechecks. Changed tasks defer closure; matching all-log evidence can close without a reply.
+  Scheduling and S1 integration are not configured.
+- Order journal generation replay and pruning by UTC filename stamp and numeric suffix,
+  so copying or restoring files cannot reorder history through changed mtimes.
+
 - Durable tasks through `send --await`, evidence pointers, `await list`, configurable compact
   hook recovery, and read-only serve-down fallback. Pending manual dispatches replay without
   typing. Duplicate dispatches become bounded reminders; task reports enter VERIFYING.
 - Controller-pane checks for task reassign/cancel, required force reasons, and durable
   secretary notices. Retention compacts terminal details while preserving closed-key guards
-  and attempts, warns at 80%, and reports capacity refusals explicitly. Evidence probes and
-  verified completion remain separate work.
+  and attempts, warns at 80%, and reports capacity refusals explicitly.
 - Recover pending messages, holds, and task records from retained generations if rotation
   stops before the replacement snapshot is complete; finished deliveries remain final (#25).
 

@@ -40,3 +40,17 @@ settle = 3.0
 write = false
 # Agents for which `courier inbox --hook` returns their open messages to a Claude Code hook.
 readers = []
+
+[hold]
+# A message for one of these agents while herdr does not know it, or while its pane shows no
+# agent session, is held instead of refused or failed. It is typed in when the agent is back with
+# the session it had (a resume), at most 10 at once and then one line about the rest; after
+# another session it stays held, readable with `courier inbox`. Set to [] to turn this off.
+when_missing = ["boss", "secretary"]
+# While messages are held for the key, courier sends one summary to the value: at once, then at
+# most every summary_every seconds while the count changes, and when the agent is back. Nothing
+# is sent while that agent is missing too.
+summary_to = { boss = "secretary", secretary = "boss" }
+# Seconds a held message waits before it fails; a lost session of any other agent waits as long.
+ttl = 14400.0
+summary_every = 900.0

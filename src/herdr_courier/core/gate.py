@@ -32,6 +32,8 @@ class Verdict:
     ok: bool
     reason: str
     fatal: bool = False
+    # The pane has no agent session now: the agent may come back with the same one (a resume).
+    lost: bool = False
 
 
 def check(
@@ -57,7 +59,10 @@ def check(
     if the agent starts another turn before its Enter; a prompt Claude Code queued during the
     turn starts one at exactly that moment.
     """
-    # A pane that had a session and now reports none is not the agent the message was for.
+    # Another session is another agent. No session may be the same agent restarting, so the
+    # caller holds the message until that session is back or the hold runs out.
+    if session and obs.session is None:
+        return Verdict(False, f"identity_changed: no session, waiting for {session}", lost=True)
     if session and obs.session != session:
         return Verdict(
             False, f"identity_changed: session {obs.session} is not {session}", fatal=True

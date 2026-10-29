@@ -9,8 +9,8 @@ import math
 import threading
 import time
 import uuid
-from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Iterable
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -27,6 +27,14 @@ JOURNAL_KEEP = 10
 # herdr rejects these before writing any byte, so a retry cannot duplicate a message.
 SUBMIT_RETRYABLE = frozenset({"agent_blocked", "agent_not_ready"})
 TARGET_GONE = frozenset({"agent_not_found", "pane_not_found"})
+# How long a message waits for an agent that lost its session or, for the agents in
+# ``hold_missing``, for the agent to come back at all.
+HOLD_TTL = 4 * 3600.0
+SUMMARY_EVERY = 15 * 60.0
+# A returning agent gets this many held messages typed in, then one line about the rest, so a
+# long outage does not bury it in a backlog.
+RELEASE_AT_ONCE = 10
+LOOKUP_EVERY = 5.0
 
 
 class State(StrEnum):
@@ -62,6 +70,30 @@ class Item:
     verify_until: float = 0.0
     client_id: str | None = None
     terminal: str | None = None
+    # Wall time after which a held item fails. An item held for a missing agent has no pane
+    # (pane_id "") until the agent is back.
+    held_until: float | None = None
+
+
+@dataclass
+class Missing:
+    """Messages held for an agent in ``hold_missing`` while herdr does not know it."""
+
+    since: float
+    items: list[str] = field(default_factory=list)
+    expired: list[str] = field(default_factory=list)
+    back: str | None = None
+    released: int = 0
+    checked: float = -math.inf
+    summary_at: float | None = None
+    summary_said: tuple | None = None
+
+    def reason(self, name: str) -> str:
+        return f"hold: {name} missing since {_hhmm(self.since)}"
+
+
+def _hhmm(wall: float) -> str:
+    return time.strftime("%H:%M", time.localtime(wall))
 
 
 @dataclass
@@ -99,22 +131,40 @@ class Dispatcher:
         log=print,
         settle_for: Callable[[str | None], float | None] | None = None,
         server: str | None = None,
+        hold_missing: Iterable[str] = (),
+        hold_ttl: float = HOLD_TTL,
+        summary_to: dict[str, str] | None = None,
+        summary_every: float = SUMMARY_EVERY,
+        wall=time.time,
     ) -> None:
         """``settle_for`` maps an agent name to its between-turns settle time, or None (gate).
 
         ``server`` is the herdr socket every call of ``herdr`` reaches; the journal records it
-        so that queued work is never replayed against another server's pane ids."""
+        so that queued work is never replayed against another server's pane ids.
+
+        A message for an agent in ``hold_missing`` that herdr does not know, or that lost its
+        session, is held for ``hold_ttl`` seconds instead of failing, and the agent named for it
+        in ``summary_to`` is told how many are held. ``wall`` is the clock of those deadlines,
+        which survive a restart."""
         self.herdr = herdr
         self.journal = journal
         self.clock = clock
+        self.wall = wall
         self.log = log
         self.settle_for = settle_for
         self.server = server
+        self.hold_missing = frozenset(hold_missing)
+        self.hold_ttl = hold_ttl
+        self.summary_to = dict(summary_to or {})
+        self.summary_every = summary_every
         self.lock = threading.Condition()
         self.items: dict[str, Item] = {}
         self.queues: dict[str, list[str]] = {}
         self.holds: dict[str, Hold] = {}
         self.watch: dict[str, PaneWatch] = {}
+        self.missing: dict[str, Missing] = {}
+        # The session each agent in hold_missing last had, for messages queued while it is gone.
+        self.seen: dict[str, str | None] = {}
         self._replay()
         if server:
             self._journal({"event": "server", "socket": server})
@@ -127,7 +177,10 @@ class Dispatcher:
         source: str,
         human: bool = False,
         client_id: str | None = None,
+        hold: bool = True,
     ) -> Item:
+        """Queue ``text`` for ``target``. ``hold=False`` refuses instead of holding it for a
+        missing agent, so courier's own summaries never wait on one another."""
         if not text.strip():
             raise DispatchError("empty message")
         if client_id and (known := self._by_client_id(client_id)):
@@ -135,8 +188,13 @@ class Dispatcher:
         try:
             agent = self.herdr.agent_get(target)
         except HerdrError as exc:
+            if hold and target in self.hold_missing and exc.code in TARGET_GONE:
+                return self._enqueue_held(target, text, source, human, client_id)
             raise DispatchError(f"cannot resolve target {target!r}: {exc}") from exc
         session = (agent.get("agent_session") or {}).get("value")
+        if target in self.hold_missing:
+            with self.lock:
+                self.seen[target] = session
         item = Item(
             id=uuid.uuid4().hex[:10],
             target=target,
@@ -166,6 +224,83 @@ class Dispatcher:
                 queue.append(item.id)
             self.lock.notify_all()
         return item
+
+    def _enqueue_held(
+        self, target: str, text: str, source: str, human: bool, client_id: str | None
+    ) -> Item:
+        with self.lock:
+            if client_id and (known := self._by_client_id(client_id)):
+                return known
+            missing = self._missing(target)
+            item = Item(
+                id=uuid.uuid4().hex[:10],
+                target=target,
+                pane_id="",
+                session=self.seen.get(target),
+                text=text,
+                source=source,
+                human=human,
+                created=time.time(),
+                state=State.WAITING,
+                reason=missing.reason(target),
+                client_id=client_id,
+                held_until=self.wall() + self.hold_ttl,
+            )
+            self._record(item, item.reason, full=True)
+            self.items[item.id] = item
+            missing.items.append(item.id)
+            self.lock.notify_all()
+        return item
+
+    def _missing(self, name: str) -> Missing:
+        if (missing := self.missing.get(name)) is None or missing.back is not None:
+            # Gone again after coming back: a new outage, but the older items stay with it.
+            old = missing
+            missing = self.missing[name] = Missing(since=self.wall())
+            if old is not None:
+                missing.items, missing.expired = old.items, old.expired
+        return missing
+
+    def _hold_by_name(self, item: Item) -> None:
+        """Take a queued item off its pane and hold it until its agent is back (lock held)."""
+        queue = self.queues.get(item.pane_id, [])
+        if item.id in queue:
+            queue.remove(item.id)
+        missing = self._missing(item.target)
+        if item.held_until is None:
+            item.held_until = self.wall() + self.hold_ttl
+        item.pane_id = ""
+        if item.id not in missing.items:
+            missing.items.append(item.id)
+            missing.items.sort(key=lambda i: self.items[i].created)
+        self._set(
+            item, State.WAITING, missing.reason(item.target), pane_id="", held_until=item.held_until
+        )
+
+    def _refused(self, item: Item, verdict) -> bool:
+        """Fail or hold an item the gate refused for its identity; True if it did (lock held).
+
+        A missing session may be the same agent restarting (a resume), so the item waits for it
+        until ``hold_ttl``; another session fails it, since it is another agent. For an agent in
+        ``hold_missing`` both wait, by name, and only a return with the same session sends it.
+        """
+        if not (verdict.fatal or verdict.lost):
+            return False
+        if item.target in self.hold_missing:
+            self._hold_by_name(item)
+        elif verdict.fatal:
+            self._finish(item, State.FAILED, verdict.reason)
+        else:
+            now = self.wall()
+            if item.held_until is None:
+                item.held_until = now + self.hold_ttl
+            if now >= item.held_until:
+                self._finish(item, State.FAILED, f"hold expired: {verdict.reason}")
+            else:
+                self._set(
+                    item, State.WAITING, f"hold: {verdict.reason}", held_until=item.held_until
+                )
+        return True
 
     def _by_client_id(self, client_id: str) -> Item | None:
         with self.lock:
@@ -241,7 +376,16 @@ class Dispatcher:
                 ),
                 key=lambda i: i.updated,
             )[-20:]
-            return {"panes": panes, "recent": [asdict(i) for i in finished]}
+            held = {
+                name: {
+                    "since": m.since,
+                    "back": m.back,
+                    "pending": [asdict(self.items[i]) for i in m.items],
+                }
+                for name, m in self.missing.items()
+                if pane is None and m.items
+            }
+            return {"panes": panes, "held": held, "recent": [asdict(i) for i in finished]}
 
     def tick(self) -> None:
         with self.lock:
@@ -250,6 +394,9 @@ class Dispatcher:
                 if hold.until is not None and hold.until <= now:
                     self._journal({"event": "hold_expired", "pane_id": pane_id})
                     del self.holds[pane_id]
+        if self.missing:
+            self._look_for_missing()
+        with self.lock:
             heads = [
                 (pane_id, self.items[queue[0]]) for pane_id, queue in self.queues.items() if queue
             ]
@@ -259,6 +406,126 @@ class Dispatcher:
             except Exception as exc:  # noqa: BLE001 - one bad pane must not stop the others
                 with self.lock:
                     self._stall(item, f"dispatcher error: {exc!r}")
+
+    def _look_for_missing(self) -> None:
+        now = self.clock()
+        with self.lock:
+            due = [name for name, m in self.missing.items() if now >= m.checked + LOOKUP_EVERY]
+            for name in due:
+                self.missing[name].checked = now
+        lines: list[tuple[str, str]] = []
+        for name in due:
+            try:
+                agent = self.herdr.agent_get(name)
+            except HerdrError:
+                agent = None
+            with self.lock:
+                if (line := self._settle_missing(name, agent)) is not None:
+                    lines.append((name, line))
+        for name, line in lines:
+            try:
+                self.enqueue(name, line, source="courier", hold=False)
+            except DispatchError as exc:
+                self.log(f"courier: line for {name} not queued: {exc}")
+        self._send_summaries()
+
+    def _settle_missing(self, name: str, agent: dict | None) -> str | None:
+        """Expire, release or keep the items held for ``name`` (lock held).
+
+        Returns the line that tells a returning agent how many more are held, if any."""
+        m = self.missing[name]
+        wall = self.wall()
+        for item_id in list(m.items):
+            item = self.items.get(item_id)
+            if item is None or item.state in FINAL:
+                m.items.remove(item_id)
+            elif item.held_until is not None and wall >= item.held_until:
+                m.expired.append(item.id)
+                self._finish(item, State.FAILED, f"hold expired: {m.reason(name)}")
+        line = None
+        # A pane without an agent session is still starting, or a bare shell: still missing.
+        session = agent and (agent.get("agent_session") or {}).get("value")
+        if session:
+            self.seen[name] = session
+            if m.back is None:
+                m.back = session
+                # Only a resume of the session the messages were queued for gets them typed in.
+                ready = [i for i in m.items if self.items[i].session == session]
+                for item_id in ready[:RELEASE_AT_ONCE]:
+                    item = self.items[item_id]
+                    m.items.remove(item_id)
+                    item.pane_id, item.terminal = agent["pane_id"], agent.get("terminal_id")
+                    item.held_until = None
+                    self.queues.setdefault(item.pane_id, []).append(item_id)
+                    self._set(
+                        item,
+                        State.QUEUED,
+                        f"released: {name} is back",
+                        pane_id=item.pane_id,
+                        terminal=item.terminal,
+                        held_until=None,
+                    )
+                    m.released += 1
+                if m.released and m.items:
+                    line = f"courier: {len(m.items)} more held for you: `courier inbox`"
+        # Kept while a summary still has news for the other agent; _send_summaries drops it then.
+        if not m.items and not m.expired and (m.summary_at is None or name not in self.summary_to):
+            del self.missing[name]
+        return line
+
+    def _send_summaries(self) -> None:
+        now = self.clock()
+        due = []
+        with self.lock:
+            for name, m in self.missing.items():
+                other = self.summary_to.get(name)
+                if not other or (other in self.missing and self.missing[other].back is None):
+                    continue
+                said = (len(m.items), len(m.expired), m.back)
+                if said == m.summary_said:
+                    continue
+                # The first summary goes at once, and so does the one that says the agent is back.
+                came_back = m.back is not None and (m.summary_said or (0, 0, None))[2] is None
+                if (
+                    m.summary_at is not None
+                    and not came_back
+                    and now - m.summary_at < self.summary_every
+                ):
+                    continue
+                due.append((name, other, said, self._summary(name, m)))
+        for name, other, said, text in due:
+            try:
+                self.enqueue(other, text, source="courier", hold=False)
+            except DispatchError:
+                # The other agent is missing too: nothing to tell, and nothing may loop.
+                continue
+            with self.lock:
+                if (m := self.missing.get(name)) is None:
+                    continue
+                m.summary_at, m.summary_said = now, said
+                m.expired.clear()
+                if m.back is not None and not m.items:
+                    del self.missing[name]
+
+    def _summary(self, name: str, m: Missing) -> str:
+        held = [self.items[i] for i in m.items]
+        parts = [f"courier: {name} missing since {_hhmm(m.since)}"]
+        if held:
+            sources: dict[str, int] = {}
+            for item in held:
+                sources[item.source] = sources.get(item.source, 0) + 1
+            by = ", ".join(f"{s} {n}" for s, n in sources.items())
+            parts.append(f"held {len(held)} ({by}); oldest {_hhmm(held[0].created)}")
+        if m.expired:
+            parts.append(f"{len(m.expired)} failed after {self.hold_ttl / 3600:g} h held")
+        if m.back is not None:
+            if m.released:
+                parts.append(f"back with the same session; {m.released} typed in")
+            elif held:
+                parts.append(f"back with a new session; the held stay held: `courier inbox {name}`")
+            else:
+                parts.append("back")
+        return "; ".join(parts)
 
     def _advance(self, pane_id: str, item: Item) -> None:
         now = self.clock()
@@ -286,8 +553,7 @@ class Dispatcher:
                 settled_for=self._settled_for(pane_id, obs, now),
                 terminal=item.terminal,
             )
-            if verdict.fatal:
-                self._finish(item, State.FAILED, verdict.reason)
+            if self._refused(item, verdict):
                 return
             if not verdict.ok:
                 self._set(item, State.WAITING, verdict.reason)
@@ -310,8 +576,7 @@ class Dispatcher:
                 settled_for=self._settled_for(pane_id, final, now),
                 terminal=item.terminal,
             )
-            if verdict.fatal:
-                self._finish(item, State.FAILED, verdict.reason)
+            if self._refused(item, verdict):
                 return
             if not verdict.ok:
                 self._empty_for(pane_id, final.line, now)
@@ -363,6 +628,9 @@ class Dispatcher:
                     if self.clock() >= item.verify_until:
                         self._finish(item, State.SENT, f"unconfirmed: cannot observe: {exc}")
                     return None
+                if exc.code in TARGET_GONE and item.target in self.hold_missing:
+                    self._hold_by_name(item)
+                    return None
                 if exc.code in TARGET_GONE:
                     item.attempts += 1
                     if item.attempts >= MAX_ATTEMPTS:
@@ -381,6 +649,8 @@ class Dispatcher:
             terminal=agent.get("terminal_id"),
         )
         with self.lock:
+            if obs.name in self.hold_missing and obs.session:
+                self.seen[obs.name] = obs.session
             self.watch.setdefault(
                 item.pane_id, PaneWatch()
             ).last = (
@@ -424,7 +694,9 @@ class Dispatcher:
             return
         self._set(item, item.state if item.state in IN_FLIGHT else State.WAITING, reason)
 
-    def _set(self, item: Item, state: State, reason: str) -> None:
+    def _set(self, item: Item, state: State, reason: str, **changed: Any) -> None:
+        """``changed`` names the item fields the caller already changed, for the journal; they
+        change only together with the state or the reason."""
         if item.state is state and item.reason == reason:
             return
         # Journal first: if that write fails the item keeps its old state, so a SUBMITTING
@@ -436,6 +708,7 @@ class Dispatcher:
                 "state": state.value,
                 "reason": reason,
                 "attempts": item.attempts,
+                **changed,
             }
         )
         item.state = state
@@ -448,6 +721,8 @@ class Dispatcher:
         queue = self.queues.get(item.pane_id, [])
         if item.id in queue:
             queue.remove(item.id)
+        if (missing := self.missing.get(item.target)) and item.id in missing.items:
+            missing.items.remove(item.id)
         self._set(item, state, reason)
         finished = [i for i in self.items.values() if i.state in FINAL]
         for old in sorted(finished, key=lambda i: i.updated)[:-KEEP_FINISHED]:
@@ -534,6 +809,9 @@ class Dispatcher:
                     item.reason = entry["reason"]
                     item.attempts = entry["attempts"]
                     item.updated = entry["t"]
+                    for key in ("pane_id", "terminal", "held_until"):
+                        if key in entry:
+                            setattr(item, key, entry[key])
         pending = sorted(
             (i for i in items.values() if i.state not in FINAL), key=lambda i: i.created
         )
@@ -569,10 +847,21 @@ class Dispatcher:
             )
             self._journal_hold(pane_id, hold)
             self.holds[pane_id] = hold
+        for item in sorted(items.values(), key=lambda i: i.created):
+            if item.target in self.hold_missing and item.session:
+                self.seen[item.target] = item.session
         for item in pending:
             item.retry_at = 0.0
             item.updated = time.time()
             self.items[item.id] = item
+            if not item.pane_id:
+                # Still held for a missing agent: it stays held, and is looked up again.
+                missing = self.missing.get(item.target) or self.missing.setdefault(
+                    item.target, Missing(since=item.created)
+                )
+                missing.items.append(item.id)
+                self._record(item, item.reason, full=True)
+                continue
             if item.state in IN_FLIGHT:
                 # The write may have happened before the restart and was not confirmed:
                 # delivery is unknown, and writing again could duplicate it.

@@ -23,3 +23,10 @@ OVIS_SETTLE = 3.0
 MAILBOX_WRITE = False
 # Agents whose `courier inbox --hook` puts their mailbox into the Claude context; others get nothing.
 MAILBOX_READERS: tuple[str, ...] = ()
+# Agents whose messages wait while herdr does not know them, instead of being refused or failing.
+# Each is the other's backup: while one is missing, the other gets one summary of what is held.
+HOLD_WHEN_MISSING = ("boss", "secretary")
+HOLD_SUMMARY_TO = {"boss": "secretary", "secretary": "boss"}
+# A planned restart takes minutes; an outage that outlasts this needs a person anyway.
+HOLD_TTL = 4 * 3600.0
+HOLD_SUMMARY_EVERY = 15 * 60.0

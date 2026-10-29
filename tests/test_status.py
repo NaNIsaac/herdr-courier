@@ -115,3 +115,23 @@ def test_empty_status():
 def test_wrap_cuts_a_word_longer_than_the_line():
     lines = display.wrap("x" * 80, 20, "  ", "  ")
     assert lines == ["  " + "x" * 17 + display.ELLIPSIS]
+
+
+def test_messages_held_for_a_missing_agent_are_listed_under_its_name():
+    item = {
+        "id": "5b1c0e9a77",
+        "state": "waiting",
+        "created": NOW - 600,
+        "human": False,
+        "source": "design",
+        "reason": "hold: boss missing since 13:20",
+        "text": "[design] READY docs#12",
+    }
+    held = {
+        "worker": {"alive": True},
+        "status": {"panes": {}, "held": {"boss": {"pending": [item]}}, "recent": []},
+    }
+    lines = cli.render_status(held, width=120, recent=10, now=NOW)
+    assert lines[0] == "boss  held until it is back"
+    assert "from design: hold: boss missing since 13:20" in lines[1]
+    assert lines[2] == "      [design] READY docs#12"

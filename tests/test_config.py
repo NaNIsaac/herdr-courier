@@ -47,6 +47,9 @@ def test_settle_takes_whole_seconds(state_dir):
         ('[ovis]\nsettle = "3"\n', "ovis.settle must be a number of seconds"),
         ("[ovis]\nsettle = nan\n", "ovis.settle must be a number of seconds"),
         ("[ovis]\nsettle = true\n", "ovis.settle must be a number of seconds"),
+        ("[hold]\nttl = 604800\n", "hold.ttl must be a number of seconds below 604800"),
+        ('[hold]\nsummary_to = ["boss"]\n', "hold.summary_to must be a table of names"),
+        ('[hold]\nsummary_to = { boss = "" }\n', "hold.summary_to must be a table of names"),
     ],
 )
 def test_bad_file_is_an_error(state_dir, text, expect):
@@ -54,6 +57,15 @@ def test_bad_file_is_an_error(state_dir, text, expect):
     with pytest.raises(config.ConfigError) as caught:
         config.load()
     assert expect in str(caught.value)
+
+
+def test_hold_takes_hours_and_its_own_pairs(state_dir):
+    (state_dir / "config.toml").write_text(
+        '[hold]\nwhen_missing = ["lead"]\nsummary_to = { lead = "deputy" }\nttl = 7200\n',
+        encoding="utf-8",
+    )
+    hold = config.load().hold
+    assert hold == config.Hold(when_missing=("lead",), summary_to={"lead": "deputy"}, ttl=7200.0)
 
 
 def test_example_matches_the_defaults():

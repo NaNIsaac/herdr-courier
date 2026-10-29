@@ -1,7 +1,7 @@
 """``config.toml`` in the state directory, laid over the built-in values in ``defaults``."""
 
 import tomllib
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -41,15 +41,24 @@ class Mailbox:
 
 
 @dataclass(frozen=True)
+class Hold:
+    when_missing: tuple[str, ...] = defaults.HOLD_WHEN_MISSING
+    summary_to: dict[str, str] = field(default_factory=lambda: dict(defaults.HOLD_SUMMARY_TO))
+    ttl: float = field(default=defaults.HOLD_TTL, metadata={"max": 7 * 24 * 3600})
+    summary_every: float = field(default=defaults.HOLD_SUMMARY_EVERY, metadata={"max": 24 * 3600})
+
+
+@dataclass(frozen=True)
 class Config:
     panes: Panes = Panes()
     doctor: Doctor = Doctor()
     ovis: Ovis = Ovis()
     mailbox: Mailbox = Mailbox()
+    hold: Hold = Hold()
     path: Path | None = None
 
 
-SECTIONS = {"panes": Panes, "doctor": Doctor, "ovis": Ovis, "mailbox": Mailbox}
+SECTIONS = {"panes": Panes, "doctor": Doctor, "ovis": Ovis, "mailbox": Mailbox, "hold": Hold}
 
 
 def config_path(root: Path | None = None) -> Path:
@@ -89,13 +98,19 @@ def _section(path: Path, name: str, cls: type, table: Any):
             if not isinstance(value, bool):
                 raise ConfigError(f"{path}: {name}.{key} must be true or false")
         elif known[key].type is float:
+            high = known[key].metadata.get("max", 600)
             if (
                 isinstance(value, bool)
                 or not isinstance(value, int | float)
-                or not 0 <= value < 600
+                or not 0 <= value < high
             ):
-                raise ConfigError(f"{path}: {name}.{key} must be a number of seconds below 600")
+                raise ConfigError(f"{path}: {name}.{key} must be a number of seconds below {high}")
             value = float(value)
+        elif known[key].type == dict[str, str]:
+            if not isinstance(value, dict) or not all(
+                isinstance(k, str) and isinstance(v, str) and k and v for k, v in value.items()
+            ):
+                raise ConfigError(f"{path}: {name}.{key} must be a table of names")
         elif isinstance(value, list) and all(isinstance(v, str) for v in value):
             value = tuple(value)
         else:

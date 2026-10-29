@@ -107,7 +107,10 @@ def cmd_send(args: argparse.Namespace) -> int:
         fail(exc, body)
     item = reply["item"]
     if not args.wait:
-        print(f"queued {item['id']} for {item['target']} ({item['pane_id']})")
+        if item["pane_id"]:
+            print(f"queued {item['id']} for {item['target']} ({item['pane_id']})")
+        else:
+            print(f"held {item['id']} for {item['target']}: {item['reason']}")
         return 0
     budget = None if args.timeout is None else args.timeout / 1000
     while item["state"] not in ("sent", "failed", "cancelled"):
@@ -154,8 +157,23 @@ def render_status(reply: dict[str, Any], *, width: int, recent: int, now: float)
             "  ",
         )
     panes = status["panes"]
-    if not any(v["pending"] or v["hold"] for v in panes.values()):
+    held = status.get("held") or {}
+    if not held and not any(v["pending"] or v["hold"] for v in panes.values()):
         out.append("no queued messages or holds")
+
+    def pending(items: list[dict[str, Any]]) -> None:
+        for item in items:
+            who = "human " if item["human"] else ""
+            out.extend(
+                display.wrap(
+                    f"{who}from {item['source']}: {item['reason']}",
+                    width,
+                    f"  {item['id']} {item['state']:9} {int(now - item['created']):4d}s ",
+                    "      ",
+                )
+            )
+            out.append("      " + display.clip(item["text"], width - 6))
+
     for pane_id, info in panes.items():
         hold = info["hold"]
         if hold is None:
@@ -171,15 +189,10 @@ def render_status(reply: dict[str, Any], *, width: int, recent: int, now: float)
             )
         if info["observed"]:
             out += display.wrap(info["observed"], width, "  observed: ", "    ")
-        for item in info["pending"]:
-            who = "human " if item["human"] else ""
-            out += display.wrap(
-                f"{who}from {item['source']}: {item['reason']}",
-                width,
-                f"  {item['id']} {item['state']:9} {int(now - item['created']):4d}s ",
-                "      ",
-            )
-            out.append("      " + display.clip(item["text"], width - 6))
+        pending(info["pending"])
+    for name, info in held.items():
+        out.append(f"{name}  held until it is back")
+        pending(info["pending"])
     if status["recent"]:
         out.append("recent:")
         for item in status["recent"][-recent:]:

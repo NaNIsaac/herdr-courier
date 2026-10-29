@@ -395,7 +395,14 @@ def serve(args: argparse.Namespace) -> int:
     try:
         herdr_socket = herdr.server_socket()
         dispatcher = Dispatcher(
-            herdr, journal_path(root), settle_for=settle_for, server=herdr_socket
+            herdr,
+            journal_path(root),
+            settle_for=settle_for,
+            server=herdr_socket,
+            hold_missing=config.hold.when_missing,
+            hold_ttl=config.hold.ttl,
+            summary_to=config.hold.summary_to,
+            summary_every=config.hold.summary_every,
         )
     except (HerdrError, WrongServer) as exc:
         lock.release()
@@ -413,6 +420,11 @@ def serve(args: argparse.Namespace) -> int:
         print(
             f"between turns only, while Ovis answers at {config.ovis.url}: "
             f"{', '.join(config.ovis.panes)} (settle {config.ovis.settle:g} s)"
+        )
+    if config.hold.when_missing:
+        print(
+            f"held while missing, up to {config.hold.ttl / 3600:g} h: "
+            f"{', '.join(config.hold.when_missing)}"
         )
     if config.mailbox.write:
         print(f"mailbox copy of every queued message in {mailbox.mailbox_dir(root)}")

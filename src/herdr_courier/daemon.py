@@ -204,7 +204,15 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
         except DispatchError as exc:
             raise BadRequest(400, str(exc)) from exc
 
-    if method == "POST" and path in ("send", "hold", "release", "await/reassign", "await/cancel"):
+    if method == "POST" and path in (
+        "send",
+        "hold",
+        "release",
+        "await/reassign",
+        "await/cancel",
+        "await/close",
+        "await/flag",
+    ):
         _check_server(d, body)
     match method, path:
         case "POST", "send":
@@ -264,6 +272,20 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
             key = _text(body, "key", 1, 128)
             sender_pane = _text(body, "sender_pane", 1, 64)
             return {"task": run(lambda: d.cancel_task(key, sender_pane=sender_pane))}
+        case "POST", "await/close":
+            key = _text(body, "key", 1, 128)
+            by = _text(body, "by", 1, 32)
+            evidence = _text(body, "evidence", 0, 2000, "")
+            limit = body.get("max_probes", 100)
+            if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+                raise BadRequest(400, "max_probes must be an integer between 1 and 100")
+            return {
+                "task": run(lambda: d.close_task(key, by=by, evidence=evidence, max_probes=limit))
+            }
+        case "POST", "await/flag":
+            key = _text(body, "key", 1, 128)
+            reason = _text(body, "reason", 1, 2000)
+            return {"task": run(lambda: d.flag_task(key, reason))}
         case "POST", "wait":
             item_id = _text(body, "id", 1, 32)
             timeout = _number(body, "timeout", 60, 0, 300)

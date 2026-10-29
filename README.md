@@ -76,10 +76,49 @@ BL-12 OPEN owner=worker age=0s due=None
 ```
 
 Optional `--repo`, `--branch`, `--cwd`, `--due` (a Unix timestamp), `--needs-approval`, and
-`--approval-ref` stay in the record. Evidence pointers describe required results; this
-release records them but does not verify or close completed tasks. An owner report
+`--approval-ref` stay in the record. Evidence pointers describe required results. An owner report
 `DONE BL-12` or `READY BL-12` changes OPEN to VERIFYING. Approval references do not grant
 approval, and DONE is separate from merge or deployment.
+
+### Objective verification
+
+**Manual execution only.** Run one pass from a terminal, or keep a foreground watcher running:
+
+```text
+$ courier await verify
+$ courier await verify --watch --interval 600 --max-probes 100
+$ courier await close BL-12 --by probe
+```
+
+Registering the watcher with a scheduler, sentinel, or service requires separate operator
+approval. Courier creates no scheduled task or persistent watcher. Ctrl+C stops a foreground
+watcher; it does not stop courier serve or a worker's task.
+
+File evidence checks existence and an optional SHA-256 digest, log evidence matches an exact
+UTF-8 line, and PR evidence uses read-only `gh pr view` with a 10 s timeout. An OPEN or MERGED
+PR must have a nonempty `local-ci:` line and a matching repository/PR URL. Merge status is
+recorded separately. Commit/test probes and S1 integration are not included; arbitrary test
+commands are never executed.
+
+Only `await close --by probe` writes verified completion. The service rechecks its stored
+evidence, outside the dispatcher lock, then compares attempts, owner, state, and evidence
+before writing DONE. If the task changed during the probe, it defers closure until a later
+pass. Caller-supplied close notes do not replace evidence. These checks establish objective
+facts, not whether the caller chose evidence that proves the intended work.
+
+Ordinary file/PR artifacts without an owner report stay OPEN and flag. The exception is an
+all-log task: each exact matching log line itself counts as a report, so it may close from
+OPEN without a courier reply. Mixed log/file evidence still needs the owner report.
+
+A watcher waits 600 s between passes by default and processes at most 100 evidence probes
+per pass, counting both its observations and the service's closing rechecks. `--max-probes`
+accepts 2 through 100; every successful single-pointer closure uses two slots. This is a count
+bound, not a wall-clock limit. A round-robin cursor prevents repeatedly failing tasks from
+indefinitely starving later tasks. Failures stay open/verifying, with one flag per key/reason
+per UTC calendar day. A stopped service produces an error and the watcher waits for its next
+interval instead of looping rapidly. No watched process is killed or automatically retried.
+
+### Dispatch recovery
 
 A repeated key for the same owner types `REMINDER BL-12, ignore if running`, never the
 task text again, at most once per 30 minutes. Another owner, or another key at the same
@@ -140,6 +179,7 @@ Inspect the command syntax without connecting to herdr:
 <!-- test -->
 ```sh
 courier await --help
+courier await verify --help
 ```
 
 ### Message delivery

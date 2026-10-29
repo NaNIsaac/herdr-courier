@@ -18,7 +18,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, NoReturn
 
-from . import agents, config, daemon, display, doctor, ledger, mailbox, panes
+from . import agents, config, daemon, display, doctor, ledger, mailbox, panes, verifier
 from .client import LostContact, Refused, Unavailable, request
 from .core.transport import CliHerdr, HerdrError
 from .state import state_dir
@@ -442,6 +442,21 @@ def task_list(root: Path | None = None) -> tuple[list[dict], str, int]:
 
 
 def cmd_await(args: argparse.Namespace) -> int:
+    if args.action == "verify":
+        try:
+            if args.watch:
+                for outcomes in verifier.watch(interval=args.interval, max_probes=args.max_probes):
+                    print(json.dumps(outcomes, ensure_ascii=False), flush=True)
+            else:
+                print(json.dumps(verifier.run(max_probes=args.max_probes), ensure_ascii=False))
+        except KeyboardInterrupt:
+            return 0
+        except (ValueError, TypeError) as exc:
+            print(f"courier: {exc}", file=sys.stderr)
+            return EXIT_FAILED
+        except (Unavailable, LostContact, Refused) as exc:
+            fail(exc, None)
+        return 0
     if args.action == "cancel":
         reply = call(
             "POST",
@@ -470,6 +485,22 @@ def cmd_await(args: argparse.Namespace) -> int:
             ),
         )
         print(json.dumps(reply["task"], ensure_ascii=False))
+        return 0
+    if args.action == "close":
+        task = call(
+            "POST",
+            "await/close",
+            on_server(
+                {
+                    "key": args.key,
+                    "by": args.by,
+                    "evidence": args.evidence,
+                    "max_probes": args.max_probes,
+                }
+            ),
+        )["task"]
+        if not args.quiet:
+            print(json.dumps(task, ensure_ascii=False))
         return 0
     tasks, banner, code = task_list()
     if args.json:
@@ -518,6 +549,18 @@ def main(argv: list[str] | None = None) -> int:
     cancel = a.add_parser("cancel")
     cancel.add_argument("key")
     cancel.set_defaults(func=cmd_await)
+    closing = a.add_parser("close")
+    closing.add_argument("key")
+    closing.add_argument("--by", required=True)
+    closing.add_argument("--evidence", default="")
+    closing.add_argument("--max-probes", type=int, default=100)
+    closing.add_argument("--quiet", action="store_true")
+    closing.set_defaults(func=cmd_await)
+    verify = a.add_parser("verify")
+    verify.add_argument("--watch", action="store_true")
+    verify.add_argument("--interval", type=float, default=600)
+    verify.add_argument("--max-probes", type=int, default=100)
+    verify.set_defaults(func=cmd_await)
 
     p = sub.add_parser("status", help="queues, holds and what the dispatcher last saw")
     p.add_argument("target", nargs="?")

@@ -136,7 +136,7 @@ def test_b2_empty_evidence_never_done(workers, start, repo, tmp_path, capsys):
     assert task(service)["state"] == "VERIFYING"
 
 
-@pytest.mark.parametrize("key", ["R23c-2", "BL-12", "games23#5", "Q401"])
+@pytest.mark.parametrize("key", ["R23c-2", "BL-12", "games23#5", "Q1"])
 def test_b3_key_must_be_deterministic(workers, start, repo, key, capsys):
     _, service = start(workers)
     code = send(repo, ["file out/a.txt"], key)

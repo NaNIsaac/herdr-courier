@@ -523,7 +523,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="courier", description="Queue prompts for herdr panes through courier serve."
     )
-    parser.add_argument("--version", action="version", version=f"herdr-courier {_distribution_version()}")
+    parser.add_argument(
+        "--version", action="version", version=f"herdr-courier {_distribution_version()}"
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("send", help="queue a prompt (same arguments as herdr agent prompt)")
@@ -638,7 +640,9 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_cancel)
 
     p = sub.add_parser("serve", help=SERVE_HELP, description=SERVE_DESCRIPTION)
-    p.add_argument("--version", action="version", version=f"herdr-courier {_distribution_version()}")
+    p.add_argument(
+        "--version", action="version", version=f"herdr-courier {_distribution_version()}"
+    )
     daemon.add_arguments(p)
     p.set_defaults(func=daemon.serve)
 
@@ -651,7 +655,9 @@ def main(argv: list[str] | None = None) -> int:
 def serve_main(argv: list[str] | None = None) -> int:
     """Entry point of ``hcd``, the same dispatcher as ``courier serve``."""
     parser = argparse.ArgumentParser(prog="hcd", description=SERVE_DESCRIPTION)
-    parser.add_argument("--version", action="version", version=f"herdr-courier {_distribution_version()}")
+    parser.add_argument(
+        "--version", action="version", version=f"herdr-courier {_distribution_version()}"
+    )
     daemon.add_arguments(parser)
     return daemon.serve(parser.parse_args(argv))
 

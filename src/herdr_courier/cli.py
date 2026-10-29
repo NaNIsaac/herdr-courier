@@ -638,6 +638,7 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_cancel)
 
     p = sub.add_parser("serve", help=SERVE_HELP, description=SERVE_DESCRIPTION)
+    p.add_argument("--version", action="version", version=f"herdr-courier {_distribution_version()}")
     daemon.add_arguments(p)
     p.set_defaults(func=daemon.serve)
 

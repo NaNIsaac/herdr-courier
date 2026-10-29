@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Durable tasks through `send --await`, evidence pointers, `await list`, configurable compact
+  hook recovery, and read-only serve-down fallback. Pending manual dispatches replay without
+  typing. Duplicate dispatches become bounded reminders; task reports enter VERIFYING.
+- Controller-pane checks for task reassign/cancel, required force reasons, and durable
+  secretary notices. Retention compacts terminal details while preserving closed-key guards
+  and attempts, warns at 80%, and reports capacity refusals explicitly. Evidence probes and
+  verified completion remain separate work.
+- Recover pending messages, holds, and task records from retained generations if rotation
+  stops before the replacement snapshot is complete; finished deliveries remain final (#25).
+
 - A message for an agent whose pane shows no session is held for up to 4 h (`hold.ttl`) and
   delivered when the same session is back, instead of failing at once with `identity_changed`.
   Another session still fails it.

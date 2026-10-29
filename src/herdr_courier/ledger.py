@@ -10,13 +10,30 @@ from pathlib import Path
 
 ACTIVE = frozenset({"OPEN", "VERIFYING", "BLOCKED"})
 KEY = re.compile(r"(?:BL-\d+|[\w.-]+#\d+|Q\d+)", re.ASCII)
+FIELDS = ("due", "repo", "branch", "cwd", "needs_approval", "approval_ref")
+DETAIL_LIMIT = 2000
+TOMBSTONE_LIMIT = 50_000
+JOURNAL_BYTES = 4 * 1024 * 1024
 
 
 def new(key: str, source: str, target: str, evidence: list[str], **fields) -> dict:
-    if not KEY.fullmatch(key):
+    if not isinstance(key, str) or len(key) > 128 or not KEY.fullmatch(key):
         raise ValueError("key must be a BACKLOG id, repo#n or Q number")
-    if not evidence or any(not isinstance(e, str) or not e.strip() for e in evidence):
+    if (
+        not isinstance(evidence, list)
+        or not evidence
+        or any(not isinstance(e, str) or not e.strip() for e in evidence)
+    ):
         raise ValueError("at least one evidence pointer is required")
+    if len(evidence) > 16 or any(len(e) > 2048 for e in evidence):
+        raise ValueError("evidence exceeds 16 pointers or 2048 characters per pointer")
+    fields = {name: fields[name] for name in FIELDS if name in fields}
+    for name in ("repo", "branch", "cwd", "approval_ref"):
+        value = fields.get(name)
+        if value is not None and (not isinstance(value, str) or len(value) > 2048):
+            raise ValueError(f"invalid {name}")
+    if not isinstance(fields.get("needs_approval", False), bool):
+        raise TypeError("needs_approval must be true or false")
     now = time.time()
     due = fields.pop("due", None)
     if due is not None and (
@@ -92,7 +109,7 @@ def evidence_exists(task: dict) -> bool:
 def apply(tasks: dict, entry: dict) -> None:
     task = entry.get("task") if entry.get("event") == "task" else None
     if entry.get("event") == "item":
-        task = entry.get("item", {}).get("task")
+        task = entry.get("task")
     if isinstance(task, dict) and "key" in task:
         tasks[task["key"]] = task
 
@@ -106,6 +123,35 @@ def read(path: Path) -> dict:
             continue
         if isinstance(entry, dict):
             apply(tasks, entry)
+    return tasks
+
+
+def history(path: Path):
+    generations = sorted(
+        path.parent.glob(f"{path.stem}.[0-9]*.jsonl"), key=lambda p: p.stat().st_mtime_ns
+    )
+    readable = False
+    for candidate in [*generations, path]:
+        try:
+            lines = candidate.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        readable = True
+        for line in lines:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(entry, dict):
+                yield entry
+    if not readable:
+        raise FileNotFoundError("no readable journal generation")
+
+
+def read_history(path: Path) -> dict:
+    tasks = {}
+    for entry in history(path):
+        apply(tasks, entry)
     return tasks
 
 

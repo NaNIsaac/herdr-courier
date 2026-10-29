@@ -4,8 +4,10 @@ One worker thread calls ``tick``; it is the only writer to any pane, which is wh
 per-pane queue a lock. Request threads only enqueue, hold, release, cancel and read status.
 """
 
+import hashlib
 import json
 import math
+import re
 import threading
 import time
 import uuid
@@ -15,7 +17,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from .. import ledger
+from .. import ledger, mailbox
 from .gate import Observation, check
 from .inputline import InputLine, LineState, classify, holds
 from .transport import Herdr, HerdrError, same_socket
@@ -71,7 +73,6 @@ class Item:
     verify_until: float = 0.0
     client_id: str | None = None
     terminal: str | None = None
-    task: dict | None = None
     # Wall time after which a held item fails. An item held for a missing agent has no pane
     # (pane_id "") until the agent is back.
     held_until: float | None = None
@@ -119,6 +120,10 @@ class DispatchError(Exception):
     pass
 
 
+class LedgerCapacity(DispatchError):
+    pass
+
+
 class WrongServer(Exception):
     """The journal holds work for another herdr server than the one this process reaches."""
 
@@ -138,6 +143,8 @@ class Dispatcher:
         summary_to: dict[str, str] | None = None,
         summary_every: float = SUMMARY_EVERY,
         wall=time.time,
+        controller: str = "boss",
+        secretary: str = "secretary",
     ) -> None:
         """``settle_for`` maps an agent name to its between-turns settle time, or None (gate).
 
@@ -152,6 +159,8 @@ class Dispatcher:
         self.journal = journal
         self.clock = clock
         self.wall = wall
+        self.controller = controller
+        self.secretary = secretary
         self.log = log
         self.settle_for = settle_for
         self.server = server
@@ -168,6 +177,8 @@ class Dispatcher:
         # The session each agent in hold_missing last had, for messages queued while it is gone.
         self.seen: dict[str, str | None] = {}
         self.tasks: dict[str, dict] = {}
+        self.ledger_notices: dict[str, dict] = {}
+        self._last_compact_size = 0
         self._replay()
         self._pending_tasks()
         if server:
@@ -194,7 +205,7 @@ class Dispatcher:
             agent = self.herdr.agent_get(target)
         except HerdrError as exc:
             if hold and target in self.hold_missing and exc.code in TARGET_GONE:
-                return self._enqueue_held(target, text, source, human, client_id)
+                return self._enqueue_held(target, text, source, human, client_id, task=task)
             raise DispatchError(f"cannot resolve target {target!r}: {exc}") from exc
         session = (agent.get("agent_session") or {}).get("value")
         if target in self.hold_missing:
@@ -211,7 +222,6 @@ class Dispatcher:
             created=time.time(),
             client_id=client_id,
             terminal=agent.get("terminal_id"),
-            task=task,
         )
         with self.lock:
             # A retried request may have raced the first one while the target was resolved.
@@ -219,8 +229,7 @@ class Dispatcher:
                 return known
             if task is not None:
                 task["dispatch_id"] = item.id
-            self._record(item, "queued", full=True)
-            item.task = None
+            self._record(item, "queued", full=True, task=task)
             self.items[item.id] = item
             if task is not None:
                 self.tasks[task["key"]] = task
@@ -247,6 +256,7 @@ class Dispatcher:
         task=None,
         reopen=False,
     ) -> Item:
+        # Condition uses an RLock: enqueue and journal helpers reacquire it below.
         with self.lock:
             if client_id and (known := self._by_client_id(client_id)):
                 return known
@@ -257,18 +267,7 @@ class Dispatcher:
                         source,
                         target,
                         task["evidence"],
-                        **{
-                            k: task[k]
-                            for k in (
-                                "due",
-                                "repo",
-                                "branch",
-                                "cwd",
-                                "needs_approval",
-                                "approval_ref",
-                            )
-                            if k in task
-                        },
+                        **{k: task[k] for k in ledger.FIELDS if k in task},
                     )
                 except (ValueError, KeyError, TypeError) as exc:
                     raise DispatchError(str(exc)) from exc
@@ -281,6 +280,7 @@ class Dispatcher:
                     if not reopen:
                         raise DispatchError("closed key requires --reopen")
                     task["attempts"] = old["attempts"] + 1
+                self._task_capacity(task["key"])
                 for other in self.tasks.values():
                     if (
                         other["key"] != task["key"]
@@ -327,13 +327,41 @@ class Dispatcher:
         self._task_record(task)
         return item
 
-    def reassign_task(self, key: str, target: str, *, source: str, force=False) -> dict:
+    def _controller_pane(self, sender_pane: str) -> None:
+        try:
+            sender = self.herdr.agent_get(sender_pane)
+        except HerdrError as exc:
+            raise DispatchError("cannot identify sender pane") from exc
+        if sender.get("pane_id") != sender_pane or sender.get("name") != self.controller:
+            raise DispatchError("reassign requires controller pane identity")
+
+    def cancel_task(self, key: str, *, sender_pane: str) -> dict:
         with self.lock:
-            if source != "boss":
-                raise DispatchError("reassign requires boss")
+            self._controller_pane(sender_pane)
+            task = self.tasks.get(key)
+            if task is None:
+                raise DispatchError("no task")
+            if task["state"] not in ledger.ACTIVE:
+                return dict(task)
+            item = self.items.get(task.get("dispatch_id"))
+            if item is not None and item.state not in FINAL and item.state not in IN_FLIGHT:
+                self._finish(item, State.CANCELLED, "task cancelled before delivery")
+            task.update(state="CANCELLED", ended=ledger.time.time(), cancelled_by=sender_pane)
+            self._task_record(task)
+            return dict(task)
+
+    def reassign_task(
+        self, key: str, target: str, *, sender_pane: str, force=False, reason=""
+    ) -> dict:
+        with self.lock:
+            self._controller_pane(sender_pane)
+            if force and not reason.strip():
+                raise DispatchError("--force requires a reason")
             task = self.tasks.get(key)
             if task is None or task["state"] not in ledger.ACTIVE:
                 raise DispatchError("no active task")
+            if task.get("secretary_notice"):
+                raise DispatchError("previous override notification is pending")
             try:
                 agent = self.herdr.agent_get(task["to"])
             except HerdrError as exc:
@@ -373,20 +401,139 @@ class Dispatcher:
             if item is not None and item.state not in FINAL and item.state not in IN_FLIGHT:
                 self._finish(item, State.CANCELLED, "task reassigned before delivery")
             task.setdefault("previous_owners", []).append(task["to"])
+            task["previous_owners"] = task["previous_owners"][-20:]
             task["to"] = target
             task["attempts"] += 1
-            task["reassigned_by"] = source
+            task["reassigned_by"] = sender_pane
             if force:
                 task["override"] = reasons or ["boss --force"]
+                task["override_reason"] = reason
+                task["secretary_notice"] = (
+                    f"FORCE reassign {key} to {target} by {sender_pane}: {reason}; "
+                    + "; ".join(reasons)
+                )
             self._task_record(task)
+            self._flush_task_notices()
             return dict(task)
 
     def _task_record(self, task: dict) -> None:
         self._journal({"event": "task", "task": task})
 
-    def _task_report(self, source: str, text: str) -> None:
-        import re
+    def _capacity_notice(self, name: str, text: str) -> None:
+        if name not in self.ledger_notices:
+            notice = {"name": name, "text": text, "sent": False}
+            self.ledger_notices[name] = notice
+            self._journal({"event": "ledger-notice", **notice})
+        self._flush_task_notices()
 
+    def _task_capacity(self, key: str) -> None:
+        if key in self.tasks and "sha" not in self.tasks[key]:
+            return
+        details = [t for t in self.tasks.values() if "sha" not in t]
+        tombstones = sum("sha" in t for t in self.tasks.values())
+        terminal = sorted(
+            (
+                t
+                for t in details
+                if t["state"] not in ledger.ACTIVE
+                and t["key"] != key
+                and not t.get("secretary_notice")
+            ),
+            key=lambda t: t.get("ended", t["sent"]),
+        )
+        while (
+            len(details) >= ledger.DETAIL_LIMIT and terminal and tombstones < ledger.TOMBSTONE_LIMIT
+        ):
+            old = terminal.pop(0)
+            compact = {
+                "key": old["key"],
+                "state": old["state"],
+                "ended": old.get("ended", old["sent"]),
+                "sha": hashlib.sha256(json.dumps(old, sort_keys=True).encode()).hexdigest(),
+                "attempts": old["attempts"],
+            }
+            self.tasks[old["key"]] = compact
+            self._task_record(compact)
+            details.remove(old)
+            tombstones += 1
+        reopening = key in self.tasks
+        if len(details) >= ledger.DETAIL_LIMIT or (
+            tombstones >= ledger.TOMBSTONE_LIMIT and not reopening
+        ):
+            self._capacity_notice(
+                "capacity-hard",
+                f"LEDGER CAPACITY: refused {key}; "
+                "archive or review retained task records before dispatching new keys",
+            )
+            raise LedgerCapacity("ledger_capacity: task retention hard cap reached")
+        if len(details) + 1 >= math.ceil(0.8 * ledger.DETAIL_LIMIT) or tombstones >= math.ceil(
+            0.8 * ledger.TOMBSTONE_LIMIT
+        ):
+            self._capacity_notice(
+                "capacity-soft",
+                "LEDGER CAPACITY: 80% retention threshold; review task history before the hard cap",
+            )
+
+    def _secretary_notice(self, text: str, client_id: str) -> None:
+        item = Item(
+            id=hashlib.sha256(client_id.encode()).hexdigest()[:10],
+            target=self.secretary,
+            pane_id="",
+            session=None,
+            text=text,
+            source="courier",
+            human=False,
+            created=ledger.time.time(),
+        )
+        if mailbox.add(self.journal.parent, item):
+            try:
+                self.enqueue(self.secretary, text, source="courier", client_id=client_id)
+            except DispatchError as exc:
+                self.log(f"secretary notice kept in mailbox: {exc}")
+
+    def _flush_task_notices(self) -> None:
+        for notice in self.ledger_notices.values():
+            if not notice["sent"]:
+                try:
+                    self._secretary_notice(notice["text"], "ledger:" + notice["name"])
+                except OSError as exc:
+                    self.log(f"secretary notification pending: {exc}")
+                    continue
+                notice["sent"] = True
+                self._journal({"event": "ledger-notice", **notice})
+        for task in self.tasks.values():
+            if text := task.get("secretary_notice"):
+                client_id = f"force:{task['key']}:{task['attempts']}"
+                try:
+                    self._secretary_notice(text, client_id)
+                except OSError as exc:
+                    self.log(f"override notification pending: {exc}")
+                    continue
+                task.pop("secretary_notice")
+                task["secretary_notified"] = True
+                self._task_record(task)
+
+    def _compact_task_journal(self) -> None:
+        if (
+            not self.tasks
+            or not self.journal.exists()
+            or self.journal.stat().st_size < self._last_compact_size + ledger.JOURNAL_BYTES
+        ):
+            return
+        self._close_generation()
+        if self.server:
+            self._journal({"event": "server", "socket": self.server})
+        for pane_id, hold in self.holds.items():
+            self._journal_hold(pane_id, hold)
+        for task in self.tasks.values():
+            self._task_record(task)
+        for notice in self.ledger_notices.values():
+            self._journal({"event": "ledger-notice", **notice})
+        for item in self.items.values():
+            self._record(item, item.reason, full=True)
+        self._last_compact_size = self.journal.stat().st_size
+
+    def _task_report(self, source: str, text: str) -> None:
         report = re.search(r"(?:^|\s)(DONE|READY|BLOCKED|FAILED)\s+(\S+)", text)
         if not report or (task := self.tasks.get(report[2])) is None:
             return
@@ -403,6 +550,8 @@ class Dispatcher:
         if state == task["state"]:
             return
         task["state"] = state
+        if state not in ledger.ACTIVE:
+            task["ended"] = ledger.time.time()
         self._task_record(task)
         if state in {"FAILED", "BLOCKED"}:
             self._task_flag(task, state, f"{state} {task['key']}: {text}")
@@ -447,18 +596,30 @@ class Dispatcher:
                     task["from"],
                     task["to"],
                     task["evidence"],
-                    **{k: v for k, v in task.items() if k not in {"key", "from", "to", "evidence"}},
+                    **{k: task[k] for k in ledger.FIELDS if k in task},
                 )
             except (ValueError, KeyError, TypeError):
                 continue
             if task["key"] not in self.tasks:
+                try:
+                    self._task_capacity(task["key"])
+                except LedgerCapacity:
+                    self.log("pending dispatch retained: ledger_capacity")
+                    return
                 task["note"] = "manual"
                 self.tasks[task["key"]] = task
                 self._task_record(task)
         path.rename(path.with_name(f"pending-dispatch.{uuid.uuid4().hex}.replayed.jsonl"))
 
     def _enqueue_held(
-        self, target: str, text: str, source: str, human: bool, client_id: str | None
+        self,
+        target: str,
+        text: str,
+        source: str,
+        human: bool,
+        client_id: str | None,
+        *,
+        task: dict | None = None,
     ) -> Item:
         with self.lock:
             if client_id and (known := self._by_client_id(client_id)):
@@ -478,8 +639,12 @@ class Dispatcher:
                 client_id=client_id,
                 held_until=self.wall() + self.hold_ttl,
             )
-            self._record(item, item.reason, full=True)
+            if task is not None:
+                task["dispatch_id"] = item.id
+            self._record(item, item.reason, full=True, task=task)
             self.items[item.id] = item
+            if task is not None:
+                self.tasks[task["key"]] = task
             missing.items.append(item.id)
             self.lock.notify_all()
         return item
@@ -620,6 +785,10 @@ class Dispatcher:
             return {"panes": panes, "held": held, "recent": [asdict(i) for i in finished]}
 
     def tick(self) -> None:
+        if self.tasks or self.ledger_notices:
+            with self.lock:
+                self._flush_task_notices()
+                self._compact_task_journal()
         if self.tasks:
             self.check_tasks()
         with self.lock:
@@ -962,7 +1131,9 @@ class Dispatcher:
         for old in sorted(finished, key=lambda i: i.updated)[:-KEEP_FINISHED]:
             del self.items[old.id]
 
-    def _record(self, item: Item, reason: str, *, full: bool = False) -> None:
+    def _record(
+        self, item: Item, reason: str, *, full: bool = False, task: dict | None = None
+    ) -> None:
         entry: dict[str, Any] = {
             "event": "item",
             "id": item.id,
@@ -972,6 +1143,8 @@ class Dispatcher:
         }
         if full:
             entry["item"] = asdict(item)
+        if task is not None:
+            entry["task"] = task
         self._journal(entry)
         self._log(item)
 
@@ -1011,22 +1184,26 @@ class Dispatcher:
             dest = self.journal.with_name(f"{stem}.{stamp}-{n}.jsonl")
             n += 1
         self.journal.replace(dest)
-        for old in sorted(self.journal.parent.glob(f"{stem}.[0-9]*.jsonl"))[:-JOURNAL_KEEP]:
+        for old in sorted(
+            self.journal.parent.glob(f"{stem}.[0-9]*.jsonl"), key=lambda p: p.stat().st_mtime_ns
+        )[:-JOURNAL_KEEP]:
             old.unlink(missing_ok=True)
 
     def _replay(self) -> None:
         """Rebuild pending items and holds after a restart and compact the journal."""
-        if not self.journal.exists():
+        if not self.journal.exists() and not any(
+            self.journal.parent.glob(f"{self.journal.stem}.[0-9]*.jsonl")
+        ):
             return
         items: dict[str, Item] = {}
         holds: dict[str, dict[str, Any]] = {}
         bound: str | None = None
-        for raw in self.journal.read_text(encoding="utf-8").splitlines():
-            try:
-                entry = json.loads(raw)
-            except ValueError:
-                continue
+        for entry in ledger.history(self.journal):
             ledger.apply(self.tasks, entry)
+            if entry.get("event") == "ledger-notice":
+                self.ledger_notices[entry["name"]] = {
+                    key: entry[key] for key in ("name", "text", "sent")
+                }
             match entry.get("event"):
                 case "server":
                     bound = entry.get("socket")
@@ -1038,7 +1215,6 @@ class Dispatcher:
                     data = entry["item"]
                     data["state"] = State(data["state"])
                     items[entry["id"]] = Item(**data)
-                    items[entry["id"]].task = None
                 case "item" if entry["id"] in items:
                     item = items[entry["id"]]
                     item.state = State(entry["state"])
@@ -1061,7 +1237,11 @@ class Dispatcher:
             self.server
             and bound
             and not same_socket(bound, self.server)
-            and (pending or live_holds)
+            and (
+                pending
+                or live_holds
+                or any(t["state"] in ledger.ACTIVE for t in self.tasks.values())
+            )
         ):
             raise WrongServer(
                 f"{self.journal} holds {len(pending)} queued messages and {len(live_holds)} "
@@ -1069,7 +1249,10 @@ class Dispatcher:
                 f"Start courier serve where HERDR_SOCKET_PATH is {bound}, or give this server its "
                 "own COURIER_STATE_DIR."
             )
-        self._close_generation()
+        if self.journal.exists():
+            self._close_generation()
+        for notice in self.ledger_notices.values():
+            self._journal({"event": "ledger-notice", **notice})
         for task in self.tasks.values():
             self._task_record(task)
         for pane_id, entry in holds.items():

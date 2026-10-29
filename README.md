@@ -63,6 +63,87 @@ name or a pane id, the same targets `herdr agent prompt` takes.
 
 ## Examples
 
+### Durable task dispatch
+
+Add `--await` and at least one evidence pointer when a task must survive the sender's
+context loss. Keys use a BACKLOG id such as `BL-12`, a repository issue/PR reference such
+as `project#5`, or a Q number. Courier checks their form; the caller checks that they exist.
+
+```text
+$ courier send worker "Produce the report" --await BL-12 --evidence "file out/report.txt"
+$ courier await list
+BL-12 OPEN owner=worker age=0s due=None
+```
+
+Optional `--repo`, `--branch`, `--cwd`, `--due` (a Unix timestamp), `--needs-approval`, and
+`--approval-ref` stay in the record. Evidence pointers describe required results; this
+release records them but does not verify or close completed tasks. An owner report
+`DONE BL-12` or `READY BL-12` changes OPEN to VERIFYING. Approval references do not grant
+approval, and DONE is separate from merge or deployment.
+
+A repeated key for the same owner types `REMINDER BL-12, ignore if running`, never the
+task text again, at most once per 30 minutes. Another owner, or another key at the same
+supplied owner/repo/branch, is refused. A closed key requires explicit `--reopen`.
+
+If serve is down, listing reads the journal read-only or explicitly reports
+`ledger unavailable` with nonzero exit. A failed await send prints the manual delivery
+path and records `pending-dispatch.jsonl`. Startup imports it as OPEN with `note: manual`,
+without typing the task. The note does not prove that manual delivery happened.
+Retained generations also recover a rotation interrupted before its replacement snapshot;
+finished deliveries are not sent again.
+
+Configure task recovery on a SessionStart(compact/resume) hook through `courier inbox --hook`:
+
+```toml
+[ledger]
+controller = "boss"
+secretary = "secretary"
+resume_for = ["boss"]
+```
+
+These names are configurable. `resume_for` is independent of `mailbox.readers`; a selected
+agent sees tasks it sent or owns, plus the serve-down status. Empty `resume_for` disables
+task injection into hooks.
+
+Reassign and cancel resolve `HERDR_PANE_ID` through herdr and require the configured
+controller pane. `--source` text does not authorize these operations. Ordinary reassign
+refuses a working owner, matching lane-state task, existing evidence, or missing execution
+proof. A live execution-proof adapter is still required; unavailable proof fails closed.
+
+```text
+$ courier await reassign BL-12 --to replacement
+$ courier await reassign BL-12 --to replacement --force --reason "Approved recovery"
+$ courier await cancel BL-12
+```
+
+Reassign changes ownership and cancels an unsent original; it does not restart the task
+or stop a running process. Forced reassignment records its reason and a durable notice to
+the configured secretary mailbox, including when the pane is unavailable. Read notices
+with `courier inbox secretary` (substitute the configured name). Pane resolution prevents
+a source-label override; it is not isolation from another local client that can forge its
+environment and access the shared service token.
+
+Detailed task records are limited to 2,000. Old terminal details compact to tombstones
+containing key, final state, end time, record SHA-256, and attempts; up to 50,000 tombstones
+retain duplicate guards and reopen counters. The 80% threshold produces one persistent
+secretary warning. At a hard cap, a new key is refused with `ledger_capacity`, HTTP 507,
+and CLI exit 5, plus a durable secretary notice. Existing-key reminders remain available.
+Review capacity before increasing the retention budget; deleting guards permits duplicates.
+
+With a ledger present, journal event history rotates after another 4 MiB of growth beyond
+its compact snapshot; the newest 10 generations are kept. A snapshot may exceed 4 MiB,
+and active records and closed-key guards are preserved. Ordinary sends without `--await`
+keep their original request, item, and journal schemas.
+
+Inspect the command syntax without connecting to herdr:
+
+<!-- test -->
+```sh
+courier await --help
+```
+
+### Message delivery
+
 Start the daemon; `hcd` and `hc serve` are other names for `courier serve`:
 
 ```text

@@ -69,7 +69,9 @@ def test_a3_compact_hook_text(workers, start, tmp_path, monkeypatch, capsys):
     _, service = start(workers)
     assert send() == 0
     assert send("BL-13", "w2") == 0
-    (tmp_path / "config.toml").write_text('[mailbox]\nreaders = ["boss"]\n')
+    (tmp_path / "config.toml").write_text(
+        '[mailbox]\nreaders = ["boss"]\n[ledger]\nresume_for = ["boss"]\n'
+    )
     for stopped in (False, True):
         if stopped:
             service.stop()

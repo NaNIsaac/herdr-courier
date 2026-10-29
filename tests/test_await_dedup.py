@@ -14,6 +14,7 @@ from herdr_courier import cli, ledger
 @pytest.fixture
 def workers(herdr, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERDR_PANE_ID", "boss")
     for name in ("boss", "w1", "w2", "w3", "w4"):
         herdr.add(name, name)
     get = herdr.agent_get
@@ -43,7 +44,7 @@ def send(key="BL-12", owner="w1", *extra):
 
 
 def reassign(*extra):
-    return cli.main(["await", "reassign", "BL-12", "--to", "w2", "--source", "boss", *extra])
+    return cli.main(["await", "reassign", "BL-12", "--to", "w2", *extra])
 
 
 def wait_for(predicate):
@@ -338,20 +339,17 @@ def test_reassign_force_is_recorded(workers, start):
     _, service = start(workers)
     assert send() == 0
     drain(workers, "w1", 1)
-    assert reassign("--force") == 0
+    assert reassign("--force", "--reason", "owner approved recovery") == 0
     task = service.dispatcher.tasks["BL-12"]
     assert "w1 working" in task["override"]
     assert task["reassigned_by"] == "boss"
 
 
-def test_reassign_requires_boss(workers, start, capsys):
+def test_reassign_requires_boss(workers, start, capsys, monkeypatch):
     _, service = start(workers)
     assert send() == 0
-    refused(
-        lambda: cli.main(["await", "reassign", "BL-12", "--to", "w2", "--source", "w1"]),
-        "reassign requires boss",
-        capsys,
-    )
+    monkeypatch.setenv("HERDR_PANE_ID", "w1")
+    refused(reassign, "reassign requires controller pane identity", capsys)
     assert service.dispatcher.tasks["BL-12"]["to"] == "w1"
 
 

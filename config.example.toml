@@ -41,6 +41,12 @@ write = false
 # Agents for which `courier inbox --hook` returns their open messages to a Claude Code hook.
 readers = []
 
+[ledger]
+controller = "boss"
+secretary = "secretary"
+# SessionStart hooks for these agents recover tasks they sent or own, even without mailbox readers.
+resume_for = []
+
 [hold]
 # A message for one of these agents while herdr does not know it, or while its pane shows no
 # agent session, is held instead of refused or failed. It is typed in when the agent is back with

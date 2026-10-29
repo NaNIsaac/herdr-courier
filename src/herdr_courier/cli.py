@@ -18,7 +18,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, NoReturn
 
-from . import agents, config, daemon, display, doctor, mailbox, panes
+from . import agents, config, daemon, display, doctor, ledger, mailbox, panes
 from .client import LostContact, Refused, Unavailable, request
 from .core.transport import CliHerdr, HerdrError
 from .state import state_dir
@@ -26,6 +26,7 @@ from .state import state_dir
 EXIT_FAILED = 1
 EXIT_UNAVAILABLE = 3
 EXIT_TIMEOUT = 4
+EXIT_CAPACITY = 5
 # Longer than the server's worst case for resolving a target (herdr CLI timeout 15 s).
 SEND_TIMEOUT = 30.0
 SERVE_HELP = "run the dispatcher, the one process that writes into panes"
@@ -64,7 +65,9 @@ def fail(exc: Exception, body: dict[str, Any] | None) -> NoReturn:
             )
         case _:
             print(f"courier: {exc}", file=sys.stderr)
-    raise SystemExit(EXIT_FAILED) from exc
+    raise SystemExit(
+        EXIT_CAPACITY if str(exc).startswith("ledger_capacity:") else EXIT_FAILED
+    ) from exc
 
 
 def on_server(body: dict[str, Any]) -> dict[str, Any]:
@@ -99,11 +102,32 @@ def cmd_send(args: argparse.Namespace) -> int:
             "client_id": uuid.uuid4().hex,
         }
     )
+    if args.await_key:
+        try:
+            body["task"] = ledger.new(
+                args.await_key,
+                args.source,
+                args.target,
+                args.evidence,
+                due=args.due,
+                repo=args.repo,
+                branch=args.branch,
+                cwd=args.cwd,
+                needs_approval=args.needs_approval,
+                approval_ref=args.approval_ref,
+            )
+        except (ValueError, TypeError) as exc:
+            print(f"courier: {exc}", file=sys.stderr)
+            return EXIT_FAILED
     try:
+        if args.reopen:
+            body["reopen"] = True
         reply = request("POST", "send", body, timeout=SEND_TIMEOUT)
     except LostContact:
         reply = call("POST", "send", body, timeout=SEND_TIMEOUT)
     except (Unavailable, Refused) as exc:
+        if isinstance(exc, Unavailable) and "task" in body:
+            ledger.pending(state_dir(), body["task"])
         fail(exc, body)
     item = reply["item"]
     if not args.wait:
@@ -330,15 +354,28 @@ def inbox_hook(root: Path, name: str | None) -> int:
         payload = json.loads(raw) if raw.strip() else {}
         event = payload.get("hook_event_name") or "UserPromptSubmit"
         detail = f"{event}/{payload['source']}" if payload.get("source") else event
-        readers = config.load().mailbox.readers
+        settings = config.load()
+        readers = settings.mailbox.readers
+        resume_for = settings.ledger.resume_for
         # Checked before asking herdr, so the hook costs nothing in a store with no readers.
-        if not readers or (name := name or own_name()) not in readers:
+        if not (readers or resume_for) or (name := name or own_name()) not in (
+            *readers,
+            *resume_for,
+        ):
             return 0
-        messages = mailbox.pending(mailbox.load(root, name), again=event == "SessionStart")
+        messages = (
+            mailbox.pending(mailbox.load(root, name), again=event == "SessionStart")
+            if name in readers
+            else []
+        )
         text = mailbox.hook_text(name, messages) if messages else ""
+        if name in resume_for and event == "SessionStart":
+            tasks, banner, _ = task_list(root)
+            tasks = [t for t in tasks if name in {t["from"], t["to"]}]
+            text += "\n" + ledger.text(tasks, banner)
         ids = ",".join(m.id for m in messages) or "-"
         mailbox.log_hook(root, f"{name} {detail} shown={ids} bytes={len(text.encode())}")
-        if not messages:
+        if not text:
             return 0
         out = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
         print(json.dumps(out, ensure_ascii=False))
@@ -391,6 +428,57 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     return 0
 
 
+def task_list(root: Path | None = None) -> tuple[list[dict], str, int]:
+    try:
+        tasks = request("GET", "await/list")["tasks"]
+        banner = ""
+    except (Unavailable, LostContact, Refused):
+        try:
+            tasks = list(ledger.read_history((root or state_dir()) / "journal.jsonl").values())
+        except (OSError, ValueError):
+            return [], "ledger unavailable", EXIT_UNAVAILABLE
+        banner = "ledger read from file, serve down"
+    return [t for t in tasks if t["state"] in ledger.ACTIVE], banner, 0
+
+
+def cmd_await(args: argparse.Namespace) -> int:
+    if args.action == "cancel":
+        reply = call(
+            "POST",
+            "await/cancel",
+            on_server(
+                {
+                    "key": args.key,
+                    "sender_pane": os.environ.get("HERDR_PANE_ID", ""),
+                }
+            ),
+        )
+        print(json.dumps(reply["task"], ensure_ascii=False))
+        return 0
+    if args.action == "reassign":
+        reply = call(
+            "POST",
+            "await/reassign",
+            on_server(
+                {
+                    "key": args.key,
+                    "to": args.to,
+                    "sender_pane": os.environ.get("HERDR_PANE_ID", ""),
+                    "force": args.force,
+                    "reason": args.reason,
+                }
+            ),
+        )
+        print(json.dumps(reply["task"], ensure_ascii=False))
+        return 0
+    tasks, banner, code = task_list()
+    if args.json:
+        print(json.dumps({"tasks": tasks, "status": banner}, ensure_ascii=False))
+    else:
+        print(ledger.text(tasks, banner))
+    return code
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="courier", description="Queue prompts for herdr panes through courier serve."
@@ -405,7 +493,31 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--timeout", type=int, metavar="MS", help="total budget for --wait")
     p.add_argument("--source", default=default_source(), help="who is sending (default: pane)")
     p.add_argument("--human", action="store_true", help="put ahead of queued agent messages")
+    p.add_argument("--await", dest="await_key")
+    p.add_argument("--evidence", action="append", default=[])
+    p.add_argument("--due", type=float)
+    p.add_argument("--repo")
+    p.add_argument("--branch")
+    p.add_argument("--cwd")
+    p.add_argument("--needs-approval", action="store_true")
+    p.add_argument("--approval-ref")
+    p.add_argument("--reopen", action="store_true")
     p.set_defaults(func=cmd_send)
+
+    p = sub.add_parser("await", help="inspect durable task records")
+    a = p.add_subparsers(dest="action", required=True)
+    listing = a.add_parser("list")
+    listing.add_argument("--json", action="store_true")
+    listing.set_defaults(func=cmd_await)
+    reassign = a.add_parser("reassign")
+    reassign.add_argument("key")
+    reassign.add_argument("--to", required=True)
+    reassign.add_argument("--force", action="store_true")
+    reassign.add_argument("--reason", default="")
+    reassign.set_defaults(func=cmd_await)
+    cancel = a.add_parser("cancel")
+    cancel.add_argument("key")
+    cancel.set_defaults(func=cmd_await)
 
     p = sub.add_parser("status", help="queues, holds and what the dispatcher last saw")
     p.add_argument("target", nargs="?")

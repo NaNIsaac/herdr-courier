@@ -41,6 +41,13 @@ class Mailbox:
 
 
 @dataclass(frozen=True)
+class Ledger:
+    controller: str = "boss"
+    secretary: str = "secretary"
+    resume_for: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class Hold:
     when_missing: tuple[str, ...] = defaults.HOLD_WHEN_MISSING
     summary_to: dict[str, str] = field(default_factory=lambda: dict(defaults.HOLD_SUMMARY_TO))
@@ -55,10 +62,18 @@ class Config:
     ovis: Ovis = Ovis()
     mailbox: Mailbox = Mailbox()
     hold: Hold = Hold()
+    ledger: Ledger = Ledger()
     path: Path | None = None
 
 
-SECTIONS = {"panes": Panes, "doctor": Doctor, "ovis": Ovis, "mailbox": Mailbox, "hold": Hold}
+SECTIONS = {
+    "panes": Panes,
+    "doctor": Doctor,
+    "ovis": Ovis,
+    "mailbox": Mailbox,
+    "hold": Hold,
+    "ledger": Ledger,
+}
 
 
 def config_path(root: Path | None = None) -> Path:
@@ -93,6 +108,8 @@ def _section(path: Path, name: str, cls: type, table: Any):
             if not isinstance(value, str):
                 raise ConfigError(f"{path}: {name}.{key} must be a string")
             if key.endswith("separator") and not value:
+                raise ConfigError(f"{path}: {name}.{key} must not be empty")
+            if name == "ledger" and key in {"controller", "secretary"} and not value.strip():
                 raise ConfigError(f"{path}: {name}.{key} must not be empty")
         elif known[key].type is bool:
             if not isinstance(value, bool):

@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import mailbox, ovis
 from .config import ConfigError, config_path, load
-from .core.queue import Dispatcher, DispatchError, WrongServer
+from .core.queue import Dispatcher, DispatchError, LedgerCapacity, WrongServer
 from .core.transport import CliHerdr, HerdrError, PaneHerdr, same_socket
 from .state import adopt_old_state, endpoint_path, journal_path, lock_path, state_dir
 
@@ -199,10 +199,12 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
     def run[T](action: Callable[[], T]) -> T:
         try:
             return action()
+        except LedgerCapacity as exc:
+            raise BadRequest(507, str(exc)) from exc
         except DispatchError as exc:
             raise BadRequest(400, str(exc)) from exc
 
-    if method == "POST" and path in ("send", "hold", "release"):
+    if method == "POST" and path in ("send", "hold", "release", "await/reassign", "await/cancel"):
         _check_server(d, body)
     match method, path:
         case "POST", "send":
@@ -215,8 +217,19 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
             target = _text(body, "target", 1, 64)
             text = _text(body, "text", 1, 20_000)
             source = _text(body, "source", 0, 64, "unknown")
+            reopen = body.get("reopen", False)
+            if not isinstance(reopen, bool):
+                raise BadRequest(400, "reopen must be true or false")
             item = run(
-                lambda: d.enqueue(target, text, source=source, human=human, client_id=client_id)
+                lambda: d.send_task(
+                    target,
+                    text,
+                    source=source,
+                    human=human,
+                    client_id=client_id,
+                    task=body.get("task"),
+                    reopen=reopen,
+                )
             )
             if service.mailbox:
                 try:
@@ -225,6 +238,32 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
                     # The mailbox is a second copy; the queued item is delivered either way.
                     print(f"courier serve: mailbox copy of {item.id} not written: {exc}")
             return {"item": asdict(item), "server": d.server}
+        case "GET", "await/list":
+            with d.lock:
+                return {"tasks": [dict(t) for t in d.tasks.values()]}
+        case "POST", "await/reassign":
+            key = _text(body, "key", 1, 128)
+            target = _text(body, "to", 1, 64)
+            sender_pane = _text(body, "sender_pane", 1, 64)
+            reason = _text(body, "reason", 0, 1000, "")
+            force = body.get("force", False)
+            if not isinstance(force, bool):
+                raise BadRequest(400, "force must be true or false")
+            return {
+                "task": run(
+                    lambda: d.reassign_task(
+                        key,
+                        target,
+                        sender_pane=sender_pane,
+                        force=force,
+                        reason=reason,
+                    )
+                )
+            }
+        case "POST", "await/cancel":
+            key = _text(body, "key", 1, 128)
+            sender_pane = _text(body, "sender_pane", 1, 64)
+            return {"task": run(lambda: d.cancel_task(key, sender_pane=sender_pane))}
         case "POST", "wait":
             item_id = _text(body, "id", 1, 32)
             timeout = _number(body, "timeout", 60, 0, 300)
@@ -403,6 +442,8 @@ def serve(args: argparse.Namespace) -> int:
             hold_ttl=config.hold.ttl,
             summary_to=config.hold.summary_to,
             summary_every=config.hold.summary_every,
+            controller=config.ledger.controller,
+            secretary=config.ledger.secretary,
         )
     except (HerdrError, WrongServer) as exc:
         lock.release()

@@ -1,4 +1,5 @@
 """Version flags must work before any subcommand or server startup."""
+
 from __future__ import annotations
 
 import pytest

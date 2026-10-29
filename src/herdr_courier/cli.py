@@ -15,6 +15,7 @@ import time
 import urllib.parse
 import uuid
 from dataclasses import asdict
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -510,9 +511,20 @@ def cmd_await(args: argparse.Namespace) -> int:
     return code
 
 
+def _distribution_version() -> str:
+    """Read the installed package version without importing build-time modules."""
+    try:
+        return version("herdr-courier")
+    except PackageNotFoundError:
+        return "unknown (not installed)"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="courier", description="Queue prompts for herdr panes through courier serve."
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"herdr-courier {_distribution_version()}"
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -628,6 +640,9 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_cancel)
 
     p = sub.add_parser("serve", help=SERVE_HELP, description=SERVE_DESCRIPTION)
+    p.add_argument(
+        "--version", action="version", version=f"herdr-courier {_distribution_version()}"
+    )
     daemon.add_arguments(p)
     p.set_defaults(func=daemon.serve)
 
@@ -640,6 +655,9 @@ def main(argv: list[str] | None = None) -> int:
 def serve_main(argv: list[str] | None = None) -> int:
     """Entry point of ``hcd``, the same dispatcher as ``courier serve``."""
     parser = argparse.ArgumentParser(prog="hcd", description=SERVE_DESCRIPTION)
+    parser.add_argument(
+        "--version", action="version", version=f"herdr-courier {_distribution_version()}"
+    )
     daemon.add_arguments(parser)
     return daemon.serve(parser.parse_args(argv))
 

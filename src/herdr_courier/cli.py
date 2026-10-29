@@ -117,6 +117,8 @@ def cmd_send(args: argparse.Namespace) -> int:
             print(f"courier: {exc}", file=sys.stderr)
             return EXIT_FAILED
     try:
+        if args.reopen:
+            body["reopen"] = True
         reply = request("POST", "send", body, timeout=SEND_TIMEOUT)
     except LostContact:
         reply = call("POST", "send", body, timeout=SEND_TIMEOUT)
@@ -427,6 +429,21 @@ def task_list(root: Path | None = None) -> tuple[list[dict], str, int]:
 
 
 def cmd_await(args: argparse.Namespace) -> int:
+    if args.action == "reassign":
+        reply = call(
+            "POST",
+            "await/reassign",
+            on_server(
+                {
+                    "key": args.key,
+                    "to": args.to,
+                    "source": args.source,
+                    "force": args.force,
+                }
+            ),
+        )
+        print(json.dumps(reply["task"], ensure_ascii=False))
+        return 0
     tasks, banner, code = task_list()
     if args.json:
         print(json.dumps({"tasks": tasks, "status": banner}, ensure_ascii=False))
@@ -457,6 +474,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cwd")
     p.add_argument("--needs-approval", action="store_true")
     p.add_argument("--approval-ref")
+    p.add_argument("--reopen", action="store_true")
     p.set_defaults(func=cmd_send)
 
     p = sub.add_parser("await", help="inspect durable task records")
@@ -464,6 +482,12 @@ def main(argv: list[str] | None = None) -> int:
     listing = a.add_parser("list")
     listing.add_argument("--json", action="store_true")
     listing.set_defaults(func=cmd_await)
+    reassign = a.add_parser("reassign")
+    reassign.add_argument("key")
+    reassign.add_argument("--to", required=True)
+    reassign.add_argument("--source", default=default_source())
+    reassign.add_argument("--force", action="store_true")
+    reassign.set_defaults(func=cmd_await)
 
     p = sub.add_parser("status", help="queues, holds and what the dispatcher last saw")
     p.add_argument("target", nargs="?")

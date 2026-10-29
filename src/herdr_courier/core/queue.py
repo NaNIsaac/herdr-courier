@@ -217,6 +217,8 @@ class Dispatcher:
             # A retried request may have raced the first one while the target was resolved.
             if client_id and (known := self._by_client_id(client_id)):
                 return known
+            if task is not None:
+                task["dispatch_id"] = item.id
             self._record(item, "queued", full=True)
             item.task = None
             self.items[item.id] = item
@@ -235,7 +237,15 @@ class Dispatcher:
         return item
 
     def send_task(
-        self, target: str, text: str, *, source: str, client_id=None, human=False, task=None
+        self,
+        target: str,
+        text: str,
+        *,
+        source: str,
+        client_id=None,
+        human=False,
+        task=None,
+        reopen=False,
     ) -> Item:
         with self.lock:
             if client_id and (known := self._by_client_id(client_id)):
@@ -262,13 +272,114 @@ class Dispatcher:
                     )
                 except (ValueError, KeyError, TypeError) as exc:
                     raise DispatchError(str(exc)) from exc
-                if task["key"] in self.tasks:
-                    raise DispatchError(f"task already exists: {task['key']}")
+                old = self.tasks.get(task["key"])
+                if old is not None:
+                    if old["state"] in ledger.ACTIVE:
+                        if old["to"] != target:
+                            raise DispatchError(f"owned by {old['to']} since {_hhmm(old['sent'])}")
+                        return self._task_reminder(old, source, client_id)
+                    if not reopen:
+                        raise DispatchError("closed key requires --reopen")
+                    task["attempts"] = old["attempts"] + 1
+                for other in self.tasks.values():
+                    if (
+                        other["key"] != task["key"]
+                        and other["state"] in ledger.ACTIVE
+                        and task.get("repo")
+                        and task.get("branch")
+                        and (other["to"], other.get("repo"), other.get("branch"))
+                        == (target, task["repo"], task["branch"])
+                    ):
+                        raise DispatchError(f"open as {other['key']}")
             item = self.enqueue(
                 target, text, source=source, human=human, client_id=client_id, task=task
             )
             self._task_report(source, text)
             return item
+
+    def _task_reminder(self, task: dict, source: str, client_id: str | None) -> Item:
+        now = ledger.time.time()
+        if now - task.get("reminded_at", -math.inf) >= 1800:
+            item = self.enqueue(
+                task["to"],
+                f"REMINDER {task['key']}, ignore if running",
+                source=source,
+                client_id=client_id,
+            )
+            task["reminded_at"] = now
+        else:
+            item = Item(
+                id=uuid.uuid4().hex[:10],
+                target=task["to"],
+                pane_id="",
+                session=None,
+                text="",
+                source=source,
+                human=False,
+                created=now,
+                state=State.SENT,
+                reason="reminder suppressed within 30 minutes",
+                client_id=client_id,
+            )
+            self._record(item, item.reason, full=True)
+            self.items[item.id] = item
+            task["reminders_suppressed"] = task.get("reminders_suppressed", 0) + 1
+        self._task_record(task)
+        return item
+
+    def reassign_task(self, key: str, target: str, *, source: str, force=False) -> dict:
+        with self.lock:
+            if source != "boss":
+                raise DispatchError("reassign requires boss")
+            task = self.tasks.get(key)
+            if task is None or task["state"] not in ledger.ACTIVE:
+                raise DispatchError("no active task")
+            try:
+                agent = self.herdr.agent_get(task["to"])
+            except HerdrError as exc:
+                if exc.code not in TARGET_GONE:
+                    raise DispatchError(f"cannot check old owner: {exc}") from exc
+                agent = {"agent_status": "missing"}
+            reasons = []
+            if not {"lane_state_task", "descendants_working"} <= agent.keys():
+                reasons.append("execution proof unavailable")
+            if agent.get("agent_status") == "working" or agent.get("descendants_working"):
+                reasons.append(f"{task['to']} working")
+            elif agent.get("agent_status") not in {"idle", "missing"}:
+                reasons.append(f"{task['to']} execution state uncertain")
+            if agent.get("lane_state_task") == key:
+                reasons.append(f"{task['to']} lane-state still owns {key}")
+            try:
+                if ledger.evidence_exists(task):
+                    reasons.append("evidence exists: verify first")
+            except (OSError, ValueError) as exc:
+                reasons.append(str(exc))
+            item = self.items.get(task.get("dispatch_id"))
+            if item is not None and item.state in IN_FLIGHT:
+                reasons.append("delivery in flight")
+            if reasons and not force:
+                raise DispatchError("; ".join(reasons))
+            self.resolve(target)
+            for other in self.tasks.values():
+                if (
+                    other["key"] != key
+                    and other["state"] in ledger.ACTIVE
+                    and task.get("repo")
+                    and task.get("branch")
+                    and (other["to"], other.get("repo"), other.get("branch"))
+                    == (target, task["repo"], task["branch"])
+                ):
+                    raise DispatchError(f"open as {other['key']}")
+            if item is not None and item.state not in FINAL and item.state not in IN_FLIGHT:
+                self._finish(item, State.CANCELLED, "task reassigned before delivery")
+            task.setdefault("previous_owners", []).append(task["to"])
+            task["to"] = target
+            task["attempts"] += 1
+            task["reassigned_by"] = source
+            if force:
+                task["override"] = reasons or ["boss --force"]
+            self._task_record(task)
+            return dict(task)
 
     def _task_record(self, task: dict) -> None:
         self._journal({"event": "task", "task": task})

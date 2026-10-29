@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import shlex
 import time
 from pathlib import Path
 
@@ -52,6 +53,40 @@ def role_names() -> set[str] | None:
         return set(data["lanes"])
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+def evidence_exists(task: dict) -> bool:
+    cwd = Path(task.get("cwd") or ".")
+    for pointer in task["evidence"]:
+        parts = shlex.split(pointer)
+        if parts and parts[0] in {"file", "log"} and len(parts) >= 2:
+            if (cwd / parts[1]).exists():
+                return True
+        elif parts and parts[0] not in {"merge", "send", "deploy", "delete", "post"}:
+            raise ValueError(f"cannot check evidence locally: {pointer}")
+    branch = task.get("branch")
+    if not branch:
+        return False
+    if any(p in {"", ".", ".."} for p in branch.split("/")) or "\\" in branch:
+        raise ValueError("invalid branch")
+    gitdir = cwd / ".git"
+    if gitdir.is_file():
+        prefix, _, path = gitdir.read_text(encoding="utf-8").partition(": ")
+        if prefix != "gitdir":
+            raise ValueError("invalid gitdir")
+        gitdir = cwd / path.strip()
+    common = gitdir / "commondir"
+    if common.is_file():
+        gitdir = gitdir / common.read_text(encoding="utf-8").strip()
+    if (gitdir / "refs" / "heads" / branch).exists():
+        return True
+    packed = gitdir / "packed-refs"
+    if packed.exists():
+        return any(
+            line.endswith(f" refs/heads/{branch}")
+            for line in packed.read_text(encoding="utf-8").splitlines()
+        )
+    return False
 
 
 def apply(tasks: dict, entry: dict) -> None:

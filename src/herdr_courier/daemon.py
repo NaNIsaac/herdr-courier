@@ -202,7 +202,7 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
         except DispatchError as exc:
             raise BadRequest(400, str(exc)) from exc
 
-    if method == "POST" and path in ("send", "hold", "release"):
+    if method == "POST" and path in ("send", "hold", "release", "await/reassign"):
         _check_server(d, body)
     match method, path:
         case "POST", "send":
@@ -215,6 +215,9 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
             target = _text(body, "target", 1, 64)
             text = _text(body, "text", 1, 20_000)
             source = _text(body, "source", 0, 64, "unknown")
+            reopen = body.get("reopen", False)
+            if not isinstance(reopen, bool):
+                raise BadRequest(400, "reopen must be true or false")
             item = run(
                 lambda: d.send_task(
                     target,
@@ -223,6 +226,7 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
                     human=human,
                     client_id=client_id,
                     task=body.get("task"),
+                    reopen=reopen,
                 )
             )
             if service.mailbox:
@@ -235,6 +239,14 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
         case "GET", "await/list":
             with d.lock:
                 return {"tasks": [dict(t) for t in d.tasks.values()]}
+        case "POST", "await/reassign":
+            key = _text(body, "key", 1, 128)
+            target = _text(body, "to", 1, 64)
+            source = _text(body, "source", 1, 64)
+            force = body.get("force", False)
+            if not isinstance(force, bool):
+                raise BadRequest(400, "force must be true or false")
+            return {"task": run(lambda: d.reassign_task(key, target, source=source, force=force))}
         case "POST", "wait":
             item_id = _text(body, "id", 1, 32)
             timeout = _number(body, "timeout", 60, 0, 300)

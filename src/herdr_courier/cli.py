@@ -7,6 +7,7 @@ once the message is queued; with ``--wait`` it waits for delivery and then, like
 
 import argparse
 import io
+from importlib.metadata import PackageNotFoundError, version
 import json
 import os
 import subprocess
@@ -510,10 +511,19 @@ def cmd_await(args: argparse.Namespace) -> int:
     return code
 
 
+def _distribution_version() -> str:
+    """Read the installed package version without importing build-time modules."""
+    try:
+        return version("herdr-courier")
+    except PackageNotFoundError:
+        return "unknown (not installed)"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="courier", description="Queue prompts for herdr panes through courier serve."
     )
+    parser.add_argument("--version", action="version", version=f"herdr-courier {_distribution_version()}")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("send", help="queue a prompt (same arguments as herdr agent prompt)")
@@ -640,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
 def serve_main(argv: list[str] | None = None) -> int:
     """Entry point of ``hcd``, the same dispatcher as ``courier serve``."""
     parser = argparse.ArgumentParser(prog="hcd", description=SERVE_DESCRIPTION)
+    parser.add_argument("--version", action="version", version=f"herdr-courier {_distribution_version()}")
     daemon.add_arguments(parser)
     return daemon.serve(parser.parse_args(argv))
 

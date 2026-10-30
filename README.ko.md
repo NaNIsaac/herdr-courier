@@ -21,6 +21,12 @@ $ courier send boss "build finished, 3 tests failing" --wait
 sent 4f1c2a9e07 to boss (w1:p2): agent working after submit
 ```
 
+## 안전한 전달 흐름 그림
+
+![courier send 요청이 pane별 대기열을 거쳐 입력창이 비고 hold가 풀릴 때 전달되는 구조](docs/media/readme-overview.svg)
+
+이 그림은 실제 터미널 캡처가 아닌 **전달 규칙의 개념도**입니다. `courier send` 요청은 pane별 큐에 쌓이고, 사람이 아직 입력 중이거나 `courier hold`가 걸린 pane에는 곧바로 입력되지 않습니다. 반대로 `herdr agent prompt`를 직접 호출하면 이 큐를 거치지 않으니 입력 충돌 위험이 남습니다.
+
 ## 설치
 
 [uv](https://docs.astral.sh/uv/)와 `PATH`에 있는 `herdr` CLI가 필요합니다. Windows와 Linux,

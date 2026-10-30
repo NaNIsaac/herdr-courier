@@ -22,6 +22,22 @@ $ courier send boss "build finished, 3 tests failing" --wait
 sent 4f1c2a9e07 to boss (w1:p2): agent working after submit
 ```
 
+## Why a queue instead of direct prompting?
+
+![The dispatcher queues a message while the target pane is being edited or explicitly held, then sends it when safe; direct `herdr agent prompt` bypasses that protection.](docs/media/readme-overview.svg)
+
+The dispatcher queues a message while the target pane is being edited or explicitly held, then sends it when safe; direct `herdr agent prompt` bypasses that protection.
+
+```sh
+courier serve                           # run once, in a dedicated shell pane
+courier doctor                          # read-only checks
+courier hold boss --reason "typing" --ttl 600
+courier send boss "[lane] tests pass"   # queued until the hold ends
+courier release boss                     # allow safe delivery
+```
+
+The commands are a **workflow illustration**, not captured terminal output. A pane whose input cannot be inspected remains queued instead of being typed into.
+
 ## Install
 
 courier needs [uv](https://docs.astral.sh/uv/) and the `herdr` CLI on `PATH`. It is tested on

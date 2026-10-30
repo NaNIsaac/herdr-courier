@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Recognise the Antigravity CLI (agy) input box (rules, "> " prompt, dim placeholder) so
+  `send` can deliver to an agy pane; dialogs inside the rules stay unknown.
+
 - Objective file/hash, exact-log, and PR probes through `await verify` and `await close --by
   probe`. A manual foreground `--watch` defaults to 600 s and 100 probes, including closing
   rechecks. Changed tasks defer closure; matching all-log evidence can close without a reply.

@@ -145,3 +145,46 @@ def test_codex_typed_text_is_typed():
 def test_codex_dialog_option_is_not_the_input_line():
     dialog = "  Allow this command?\r\n› 1. Yes\r\n  2. No\r\n  Press enter to confirm\r\n"
     assert classify(dialog).state is LineState.UNKNOWN
+
+
+AGY_EMPTY = (Path(__file__).parent.parent / "fixtures" / "agy" / "idle-or-current.ansi").read_text(
+    encoding="utf-8"
+)
+AGY_PLACEHOLDER = (
+    "\x1b[38;2;154;160;166mAuto mode: edits & safe commands auto-approved (shift+tab to cycle)"
+)
+
+
+def test_agy_placeholder_is_empty():
+    line = classify(AGY_EMPTY)
+    assert line.state is LineState.EMPTY
+    assert "placeholder" in line.evidence
+
+
+def test_agy_blank_box_is_empty():
+    blank = AGY_EMPTY.replace(AGY_PLACEHOLDER, "")
+    line = classify(blank)
+    assert line.state is LineState.EMPTY
+
+
+def test_agy_typed_text_is_typed():
+    typed = AGY_EMPTY.replace(AGY_PLACEHOLDER, "\x1b[38;2;232;234;237mstatus report")
+    line = classify(typed)
+    assert line.state is LineState.TYPED
+    assert line.text == "status report"
+
+
+@pytest.mark.parametrize(
+    "dialog",
+    [
+        "  Allow this command?\r\n> 1. Yes\r\n  2. No\r\n  Press enter to confirm\r\n",
+        "\n".join(
+            "Allow this command?\n> 1. Yes\n  2. No" if AGY_PLACEHOLDER in ln else ln
+            for ln in AGY_EMPTY.split("\n")
+        ),
+    ],
+)
+def test_agy_dialog_is_not_empty(dialog):
+    line = classify(dialog)
+    assert line.state is LineState.UNKNOWN
+    assert line.state is not LineState.EMPTY

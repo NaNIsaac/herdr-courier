@@ -8,6 +8,10 @@ of a placeholder, so that one cell is not dim. Anything that does not look like 
 UNKNOWN, so a renderer change or an unrecognised dialog makes the dispatcher wait instead of
 typing into it.
 
+Antigravity CLI (agy) also draws its input box between two horizontal rules, starting with "> ".
+Its placeholder ("Auto mode: edits & safe commands auto-approved (shift+tab to cycle)") is drawn
+dim (SGR 2 or muted grey SGR 38;2;154;160;166).
+
 Codex draws no rules. Its input is a line starting with "›", padded above and below by a blank
 row with a background colour (SGR 48), and its placeholder ("Ask Codex to do anything") is dim.
 The same "›" marks the selected option of a dialog, but there the rows around it are not blank
@@ -22,6 +26,8 @@ SGR = re.compile(r"\x1b\[([0-9;:]*)m")
 OTHER_ESCAPE = re.compile(r"\x1b\[[0-9;?:]*[A-Za-ln-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 RULE = "─" * 8
 PROMPT = "❯"
+AGY_PROMPT = ">"
+AGY_DIM_FG = (154, 160, 166)
 CODEX_PROMPT = "›"
 BACKGROUND = re.compile(r"\x1b\[(?:[0-9;:]*;)?(?:48|4[0-7]|10[0-7])[;:m]")
 
@@ -43,6 +49,7 @@ class InputLine:
 class _Style:
     dim: bool = False
     reverse: bool = False
+    fg: tuple[int, int, int] | None = None
 
 
 def _styled(line: str) -> list[tuple[str, _Style]]:
@@ -60,7 +67,7 @@ def _styled(line: str) -> list[tuple[str, _Style]]:
 
 def _apply_sgr(params: str, style: _Style) -> _Style:
     """Style after one SGR sequence, skipping colour arguments."""
-    dim, reverse = style.dim, style.reverse
+    dim, reverse, fg = style.dim, style.reverse, style.fg
     groups = params.split(";")
     i = 0
     while i < len(groups):
@@ -69,17 +76,36 @@ def _apply_sgr(params: str, style: _Style) -> _Style:
             # Colon form (38:2::R:G:B, 4:3) carries its own arguments in the same group.
             if head == "0":
                 dim = reverse = False
+                fg = None
             elif head == "22":
                 dim = False
+            elif head == "38":
+                parts = groups[i].split(":")
+                if len(parts) >= 5 and parts[1] == "2" and all(p.isdigit() for p in parts[-3:]):
+                    fg = (int(parts[-3]), int(parts[-2]), int(parts[-1]))
+                else:
+                    fg = None
+            elif head == "39":
+                fg = None
             i += 1
             continue
         if head in ("38", "48", "58"):
             # Semicolon form: 38;5;N or 38;2;R;G;B, so a "2" there is not read as dim.
             mode = groups[i + 1] if i + 1 < len(groups) else ""
+            if head == "38":
+                if (
+                    mode == "2"
+                    and i + 4 < len(groups)
+                    and all(g.isdigit() for g in groups[i + 2 : i + 5])
+                ):
+                    fg = (int(groups[i + 2]), int(groups[i + 3]), int(groups[i + 4]))
+                else:
+                    fg = None
             i += 5 if mode == "2" else 3 if mode == "5" else 2
             continue
         if head == "0":
             dim = reverse = False
+            fg = None
         elif head == "22":
             dim = False
         elif head == "2":
@@ -88,8 +114,19 @@ def _apply_sgr(params: str, style: _Style) -> _Style:
             reverse = True
         elif head == "27":
             reverse = False
+        elif head == "39" or (head.isdigit() and (30 <= int(head) <= 37 or 90 <= int(head) <= 97)):
+            fg = None
         i += 1
-    return _Style(dim, reverse)
+    return _Style(dim, reverse, fg)
+
+
+def _box_prompt(line: str) -> str | None:
+    stripped = line.lstrip()
+    if stripped.startswith(PROMPT):
+        return PROMPT
+    if stripped == AGY_PROMPT or stripped.startswith((f"{AGY_PROMPT} ", f"{AGY_PROMPT}\xa0")):
+        return AGY_PROMPT
+    return None
 
 
 def _placeholder(ink: list[_Style]) -> bool:
@@ -148,16 +185,19 @@ def classify(screen: str) -> InputLine:
     while top + 1 < bottom and not plain[top + 1].strip():
         top += 1
     body = lines[top + 1 : bottom]
-    if not body or not plain[top + 1].lstrip().startswith(PROMPT):
+    prompt = _box_prompt(plain[top + 1]) if body else None
+    if prompt is None:
         shown = " | ".join(plain[top + 1 : bottom])[:80]
         return InputLine(LineState.UNKNOWN, "", f"box does not start with {PROMPT}: {shown!r}")
     first = _styled(body[0])
-    start = next(i for i, (c, _) in enumerate(first) if c == PROMPT) + 1
+    start = next(i for i, (c, _) in enumerate(first) if c == prompt) + 1
     chars = first[start:]
     for ln in body[1:]:
         chars += [("\n", _Style()), *_styled(ln)]
     text = "".join(c for c, _ in chars).strip()
     ink = [style for c, style in chars if not c.isspace()]
+    if prompt == AGY_PROMPT:
+        ink = [_Style(s.dim or s.fg == AGY_DIM_FG, s.reverse) for s in ink]
     if not ink:
         return InputLine(LineState.EMPTY, "", "prompt line blank")
     if _placeholder(ink):

@@ -211,3 +211,11 @@ def holds(line: InputLine, sent: str) -> bool:
         return False
     head = " ".join(sent.split())[:24]
     return bool(head) and head in " ".join(line.text.split())
+
+
+def matches(line: InputLine, sent: str) -> bool:
+    """Prove complete ownership; a shared prefix is insufficient for a recovery keystroke."""
+    if line.state is not LineState.TYPED:
+        return False
+    text = sent.replace("\r\n", "\n").strip()
+    return bool(text) and line.text == "\n  ".join(text.split("\n"))

@@ -22,6 +22,7 @@ class Herdr(Protocol):
     def agent_list(self) -> list[dict[str, Any]]: ...
     def read_ansi(self, pane_id: str, lines: int = 12) -> str: ...
     def submit(self, pane_id: str, text: str) -> None: ...
+    def enter(self, pane_id: str) -> None: ...
 
 
 def same_socket(a: str, b: str) -> bool:
@@ -108,6 +109,9 @@ class CliHerdr:
         # The reply is not needed; parsing it could only turn a delivered prompt into an error.
         _run(["agent", "prompt", pane_id, text], 15.0)
 
+    def enter(self, pane_id: str) -> None:
+        _run(["pane", "send-keys", pane_id, "enter"], 15.0)
+
 
 class PaneHerdr(CliHerdr):
     """Submits with ``pane send-text`` plus Enter.
@@ -119,4 +123,4 @@ class PaneHerdr(CliHerdr):
     def submit(self, pane_id: str, text: str) -> None:
         # Both commands print nothing on success.
         _run(["pane", "send-text", pane_id, text], 15.0)
-        _run(["pane", "send-keys", pane_id, "enter"], 15.0)
+        self.enter(pane_id)

@@ -146,7 +146,12 @@ come back after a restart, marked as restored in `courier status`.
 
 After writing, a working state, an empty box or the queued-messages placeholder within 5 s
 confirms delivery, and the next message to that pane waits a full debounce again. Text left in
-the box fails the item without a resend. Only errors that prove
+  the box fails the item without a resend. For a multiline message still fully visible in the
+  input box, courier rechecks the session, terminal, hold and focus before retrying Enter once.
+  The target must be idle or done; working alone is not confirmation while that same text remains.
+  The retry is journalled before the key and is never replayed after restart. Courier does not
+  repaste the message or retry an edited, wrapped, collapsed or otherwise unproven input box.
+  A second verification timeout fails the item. Only errors that prove
 nothing was written (`agent_blocked`, `agent_not_ready`) are retried, at most 5 times with
 backoff. Any other failure during the write fails the item.
 

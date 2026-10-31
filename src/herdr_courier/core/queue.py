@@ -20,7 +20,7 @@ from typing import Any
 
 from .. import ledger, mailbox, probes
 from .gate import Observation, check
-from .inputline import InputLine, LineState, classify, holds
+from .inputline import InputLine, LineState, classify, holds, matches
 from .transport import Herdr, HerdrError, same_socket
 
 VERIFY_SECONDS = 5.0
@@ -171,6 +171,7 @@ class Dispatcher:
         self.summary_every = summary_every
         self.lock = threading.Condition()
         self.items: dict[str, Item] = {}
+        self._enter_retried: set[str] = set()
         self.queues: dict[str, list[str]] = {}
         self.holds: dict[str, Hold] = {}
         self.watch: dict[str, PaneWatch] = {}
@@ -997,10 +998,14 @@ class Dispatcher:
         with self.lock:
             if item.state in FINAL:
                 return
-            if item.state in IN_FLIGHT:
-                # SUBMITTING here means an earlier write returned but its VERIFYING record was
-                # not written; confirm it like any other write instead of writing again.
-                self._verify(item, obs, now)
+            verifying = item.state in IN_FLIGHT
+            retry_enter = self._verify(item, obs, now) if verifying else False
+        if verifying:
+            if retry_enter:
+                self._retry_enter(item)
+            return
+        with self.lock:
+            if item.state in FINAL:
                 return
             verdict = check(
                 obs,
@@ -1063,23 +1068,69 @@ class Dispatcher:
             item.verify_until = self.clock() + VERIFY_SECONDS
             self._set(item, State.VERIFYING, "submitted, confirming")
 
-    def _verify(self, item: Item, obs: Observation, now: float) -> None:
-        if obs.status in ("working", "blocked"):
+    def _verify(self, item: Item, obs: Observation, now: float) -> bool:
+        if "\n" in item.text and matches(obs.line, item.text):
+            if now < item.verify_until:
+                return False
+            if item.id not in self._enter_retried:
+                return True
+            self._finish(item, State.FAILED, "stuck_in_input: text remains after one Enter retry")
+        elif obs.status in ("working", "blocked"):
             self._finish(item, State.SENT, f"agent {obs.status} after submit")
         elif obs.line.state is LineState.EMPTY:
             self._finish(item, State.SENT, f"input box cleared ({obs.line.evidence})")
         elif now < item.verify_until:
-            return
+            return False
         elif holds(obs.line, item.text):
             # Enter did not take. Leave the text for a human to see; never resend.
             self._finish(item, State.FAILED, "stuck_in_input: text is still in the input box")
         else:
             self._finish(item, State.SENT, f"unconfirmed: {obs.line.evidence}")
+        return False
+
+    def _retry_enter(self, item: Item) -> None:
+        # Re-observe outside the lock so a hold arriving during the CLI reads can be honoured.
+        final = self._observe(item)
+        with self.lock:
+            if item.state in FINAL:
+                return
+            if final is None:
+                self._finish(item, State.FAILED, "stuck_in_input: cannot confirm safe Enter retry")
+                return
+            if not matches(final.line, item.text):
+                self._verify(item, final, self.clock())
+                return
+            if (
+                final.status not in ("idle", "done")
+                or final.focused
+                or self._hold_reason(item.pane_id, self.clock())
+                or not (item.session or item.terminal)
+                or item.session
+                and final.session != item.session
+                or item.terminal
+                and final.terminal != item.terminal
+            ):
+                self._finish(
+                    item, State.FAILED, "stuck_in_input: Enter retry refused by target guards"
+                )
+                return
+            self._enter_retried.add(item.id)
+            self._set(item, State.VERIFYING, "retrying Enter once", enter_retried=True)
+        try:
+            self.herdr.enter(item.pane_id)
+        except Exception as exc:  # noqa: BLE001 - a key may have landed; never retry it again
+            with self.lock:
+                self._finish(item, State.FAILED, f"Enter retry failed: {exc!r}")
+            return
+        with self.lock:
+            item.verify_until = self.clock() + VERIFY_SECONDS
+            self._set(item, State.VERIFYING, "Enter retried once, confirming")
 
     def _observe(self, item: Item) -> Observation | None:
         try:
             agent = self.herdr.agent_get(item.pane_id)
-            line = classify(self.herdr.read_ansi(item.pane_id))
+            lines = min(256, max(12, item.text.count("\n") + 7))
+            line = classify(self.herdr.read_ansi(item.pane_id, lines=lines))
         except HerdrError as exc:
             with self.lock:
                 if item.state in IN_FLIGHT:
@@ -1185,6 +1236,7 @@ class Dispatcher:
         finished = [i for i in self.items.values() if i.state in FINAL]
         for old in sorted(finished, key=lambda i: i.updated)[:-KEEP_FINISHED]:
             del self.items[old.id]
+            self._enter_retried.discard(old.id)
 
     def _record(
         self, item: Item, reason: str, *, full: bool = False, task: dict | None = None
@@ -1198,6 +1250,8 @@ class Dispatcher:
         }
         if full:
             entry["item"] = asdict(item)
+        if item.id in self._enter_retried:
+            entry["enter_retried"] = True
         if task is not None:
             entry["task"] = task
         self._journal(entry)
@@ -1279,6 +1333,8 @@ class Dispatcher:
                     for key in ("pane_id", "terminal", "held_until"):
                         if key in entry:
                             setattr(item, key, entry[key])
+            if entry.get("event") == "item" and entry.get("enter_retried"):
+                self._enter_retried.add(entry["id"])
         pending = sorted(
             (i for i in items.values() if i.state not in FINAL), key=lambda i: i.created
         )
@@ -1348,3 +1404,4 @@ class Dispatcher:
                 item.reason = "restored after restart"
                 self.queues.setdefault(item.pane_id, []).append(item.id)
             self._record(item, item.reason, full=True)
+        self._enter_retried.intersection_update(self.items)

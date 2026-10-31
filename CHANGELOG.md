@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Retry Enter once for a confirmed pending multiline paste, without repasting its text.
+  Fresh identity, hold, focus and input checks guard recovery; restarts never replay the key.
+
 - Recognise the Antigravity CLI (agy) input box (rules, "> " prompt, dim placeholder) so
   `send` can deliver to an agy pane; dialogs inside the rules stay unknown.
 

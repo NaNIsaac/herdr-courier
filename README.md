@@ -292,6 +292,28 @@ courier send boss "[lane] need a decision" --wait --timeout 120000
 Without `--wait`, `send` returns once the message is queued. With it, `send` waits for delivery
 and then, like `herdr agent prompt --wait`, for the agent to settle.
 
+### Send files with a message
+
+```sh
+courier send boss "[lane] the plot looks off" --file out/plot.png --file out/fit.json
+ssh pc-a courier send boss "photo from pc-b" --file pc-b:C:/Users/me/photo.jpg
+```
+
+`courier send` copies each file into the inbox folder of the PC it runs on, the PC whose daemon
+types the message, at `<inbox>/YYYYMMDD-HHMMSS-<message id>/<original name>`. The message gets one
+line per file naming that copy, so the agent opens a path on its own PC:
+
+```text
+file: D:\inbox\20261102-215301-3f2a9c1d0e\photo.jpg (from pc-b C:/Users/me/photo.jpg, 503 KB, sha256 9b1c0e7a44d2)
+```
+
+The part in brackets says where the file came from and is only information. `MACHINE:PATH`
+fetches a file from another PC with `scp`, so the sender needs no copy step of its own; a single
+letter before the colon is a Windows drive, not a machine. At most 10 files, 25 MB each and
+100 MB in all go with one message. If any copy fails, nothing is sent, the copies already made
+are removed, and `send` exits 1 with the reason. With the mailbox on, the message record also
+lists the files under `attachments` ([docs/mailbox.md](docs/mailbox.md)).
+
 ### Type a long message from your phone
 
 ```sh
@@ -338,7 +360,7 @@ check fails. `status` shows every queue and hold and what the daemon last saw in
 | command | does |
 | --- | --- |
 | `courier serve [--port N] [--tick S]` | run the daemon in the foreground (port 0, the default, picks a free one); also `hc serve` and `hcd` |
-| `courier send TARGET TEXT [--wait] [--until STATUS] [--timeout MS] [--source NAME] [--human]` | queue a message; `--human` puts it ahead of queued agent messages |
+| `courier send TARGET TEXT [--wait] [--until STATUS] [--timeout MS] [--source NAME] [--human] [--file PATH...]` | queue a message; `--human` puts it ahead of queued agent messages; `--file` copies files into this PC's inbox and names the copies |
 | `courier status [TARGET] [--recent N] [--json] [--width N]` | queues, holds and the last observation per pane |
 | `courier hold TARGET [--ttl SECONDS] [--reason TEXT] [--owner NAME]` | stop the daemon from typing into a pane |
 | `courier release TARGET` | drop a hold |
@@ -376,7 +398,8 @@ The state directory is `%LOCALAPPDATA%\herdr-courier` on Windows and
 `$XDG_STATE_HOME/herdr-courier` (`~/.local/state/herdr-courier`) elsewhere; `COURIER_STATE_DIR`
 moves it. It holds your `config.toml` and the daemon's `journal.jsonl`, `lock` and
 `endpoint.json` (port and access token), and with `mailbox.write` on, `mailbox/<target>.jsonl`
-and `mailbox/hook.log`. The daemon moves a 0.1 state directory (`herdr-console`)
+and `mailbox/hook.log`, and `inbox/` for `courier send --file` unless `files.inbox` names
+another folder. The daemon moves a 0.1 state directory (`herdr-console`)
 to the new name on its first start.
 
 ### Configuration
@@ -398,6 +421,7 @@ keys you change. An unknown key or a wrong type is an error, which `courier doct
 | `ovis.settle` | `3.0` | seconds the agent state must stay unchanged after a turn before such a message goes |
 | `mailbox.write` | `false` | the daemon also keeps a mailbox copy of every queued message |
 | `mailbox.readers` | `[]` | agents whose `courier inbox --hook` returns their open messages |
+| `files.inbox` | `""` | where `courier send --file` copies files on this PC; `""` is `inbox/` in the state directory |
 
 ## How it works
 

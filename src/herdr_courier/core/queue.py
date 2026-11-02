@@ -196,25 +196,31 @@ class Dispatcher:
         client_id: str | None = None,
         hold: bool = True,
         task: dict | None = None,
+        item_id: str | None = None,
     ) -> Item:
         """Queue ``text`` for ``target``. ``hold=False`` refuses instead of holding it for a
-        missing agent, so courier's own summaries never wait on one another."""
+        missing agent, so courier's own summaries never wait on one another. ``item_id`` is one
+        the client chose, so files it copied for the message sit under the message's id."""
         if not text.strip():
             raise DispatchError("empty message")
         if client_id and (known := self._by_client_id(client_id)):
             return known
+        if item_id is not None and item_id in self.items:
+            raise DispatchError(f"id {item_id} is in use")
         try:
             agent = self.herdr.agent_get(target)
         except HerdrError as exc:
             if hold and target in self.hold_missing and exc.code in TARGET_GONE:
-                return self._enqueue_held(target, text, source, human, client_id, task=task)
+                return self._enqueue_held(
+                    target, text, source, human, client_id, task=task, item_id=item_id
+                )
             raise DispatchError(f"cannot resolve target {target!r}: {exc}") from exc
         session = (agent.get("agent_session") or {}).get("value")
         if target in self.hold_missing:
             with self.lock:
                 self.seen[target] = session
         item = Item(
-            id=uuid.uuid4().hex[:10],
+            id=item_id or uuid.uuid4().hex[:10],
             target=target,
             pane_id=agent["pane_id"],
             session=session,
@@ -257,6 +263,7 @@ class Dispatcher:
         human=False,
         task=None,
         reopen=False,
+        item_id=None,
     ) -> Item:
         # Condition uses an RLock: enqueue and journal helpers reacquire it below.
         with self.lock:
@@ -294,7 +301,13 @@ class Dispatcher:
                     ):
                         raise DispatchError(f"open as {other['key']}")
             item = self.enqueue(
-                target, text, source=source, human=human, client_id=client_id, task=task
+                target,
+                text,
+                source=source,
+                human=human,
+                client_id=client_id,
+                task=task,
+                item_id=item_id,
             )
             self._task_report(source, text)
             return item
@@ -676,13 +689,14 @@ class Dispatcher:
         client_id: str | None,
         *,
         task: dict | None = None,
+        item_id: str | None = None,
     ) -> Item:
         with self.lock:
             if client_id and (known := self._by_client_id(client_id)):
                 return known
             missing = self._missing(target)
             item = Item(
-                id=uuid.uuid4().hex[:10],
+                id=item_id or uuid.uuid4().hex[:10],
                 target=target,
                 pane_id="",
                 session=self.seen.get(target),

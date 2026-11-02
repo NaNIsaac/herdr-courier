@@ -12,6 +12,7 @@ import json
 import re
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,7 @@ class Message:
     human: bool = False
     shown: list[dict[str, Any]] = field(default_factory=list)
     done: float | None = None
+    attachments: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def state(self) -> str:
@@ -87,6 +89,7 @@ def load(root: Path, target: str) -> list[Message]:
                     created=rec["created"],
                     text=rec["text"],
                     human=rec.get("human", False),
+                    attachments=rec.get("attachments", []),
                 )
             case "shown" if rec["id"] in messages:
                 messages[rec["id"]].shown.append({"at": rec["at"], "event": rec.get("event")})
@@ -95,7 +98,7 @@ def load(root: Path, target: str) -> list[Message]:
     return list(messages.values())
 
 
-def add(root: Path, item: Any) -> bool:
+def add(root: Path, item: Any, attachments: Sequence[dict[str, Any]] = ()) -> bool:
     """Record a queued item once; a client retry that returned the same item adds nothing."""
     record = {
         "kind": "message",
@@ -106,6 +109,8 @@ def add(root: Path, item: Any) -> bool:
         "human": item.human,
         "text": item.text,
     }
+    if attachments:
+        record["attachments"] = list(attachments)
     with _lock:
         if any(m.id == item.id for m in load(root, item.target)):
             return False

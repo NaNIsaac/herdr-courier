@@ -9,6 +9,7 @@ import argparse
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -19,7 +20,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, NoReturn
 
-from . import agents, config, daemon, display, doctor, ledger, mailbox, panes, verifier
+from . import agents, attach, config, daemon, display, doctor, ledger, mailbox, panes, verifier
 from .client import LostContact, Refused, Unavailable, request
 from .core.transport import CliHerdr, HerdrError
 from .state import state_dir
@@ -120,22 +121,54 @@ def cmd_send(args: argparse.Namespace) -> int:
         except (ValueError, TypeError) as exc:
             print(f"courier: {exc}", file=sys.stderr)
             return EXIT_FAILED
+    folder = None
+    if args.file:
+        body["id"] = uuid.uuid4().hex[:10]
+        try:
+            inbox = attach.inbox_dir(config.load().files.inbox)
+            folder, files = attach.stage(args.file, inbox, body["id"])
+        except (attach.AttachError, config.ConfigError) as exc:
+            print(f"courier: nothing was sent: {exc}", file=sys.stderr)
+            return EXIT_FAILED
+        body["text"] = "\n".join([args.text, *map(attach.line, files)])
+        body["attachments"] = [asdict(a) for a in files]
+    if args.reopen:
+        body["reopen"] = True
+    retried = False
     try:
-        if args.reopen:
-            body["reopen"] = True
-        reply = request("POST", "send", body, timeout=SEND_TIMEOUT)
-    except LostContact:
-        reply = call("POST", "send", body, timeout=SEND_TIMEOUT)
-    except (Unavailable, Refused) as exc:
-        if isinstance(exc, Unavailable) and "task" in body:
+        try:
+            reply = request("POST", "send", body, timeout=SEND_TIMEOUT)
+        except LostContact:
+            retried = True
+            reply = request("POST", "send", body, timeout=SEND_TIMEOUT)
+    except (Unavailable, Refused, LostContact) as exc:
+        if isinstance(exc, Unavailable) and "task" in body and not retried:
             ledger.pending(state_dir(), body["task"])
-        fail(exc, body)
+        # After a lost reply the first request may have queued the message that names the files.
+        if folder and not retried and not isinstance(exc, LostContact):
+            shutil.rmtree(folder, ignore_errors=True)
+        # The hand-delivery hint must not name copies that were just removed.
+        fail(exc, body | {"text": args.text} if folder and not retried else body)
     item = reply["item"]
+    if folder:
+        if "attachments" not in reply:
+            print(
+                f"courier: warning: courier serve predates --file; {folder} is not named after "
+                f"message {item['id']} and the mailbox has no attachments",
+                file=sys.stderr,
+            )
+        elif item["id"] != body["id"]:
+            # An open --await task turned the send into a reminder that does not name the files.
+            shutil.rmtree(folder, ignore_errors=True)
+            print(f"courier: the files were not sent: {item['id']} is a reminder", file=sys.stderr)
+            folder = None
     if not args.wait:
         if item["pane_id"]:
             print(f"queued {item['id']} for {item['target']} ({item['pane_id']})")
         else:
             print(f"held {item['id']} for {item['target']}: {item['reason']}")
+        if folder:
+            print(f"{len(files)} file(s) in {folder}")
         return 0
     budget = None if args.timeout is None else args.timeout / 1000
     while item["state"] not in ("sent", "failed", "cancelled"):
@@ -146,6 +179,8 @@ def cmd_send(args: argparse.Namespace) -> int:
         step = min(left, 60.0)
         item = call("POST", "wait", {"id": item["id"], "timeout": step}, timeout=step + 5)["item"]
     print(f"{item['state']} {item['id']} to {item['target']} ({item['pane_id']}): {item['reason']}")
+    if folder:
+        print(f"{len(files)} file(s) in {folder}")
     if item["state"] != "sent":
         return EXIT_FAILED
     wait = ["herdr", "agent", "wait", item["pane_id"]]
@@ -545,6 +580,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--needs-approval", action="store_true")
     p.add_argument("--approval-ref")
     p.add_argument("--reopen", action="store_true")
+    p.add_argument(
+        "--file",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="copy into this PC's inbox and name the copy in the message; MACHINE:PATH fetches "
+        "it with scp; repeat for more (at most 10, 25 MB each, 100 MB in all)",
+    )
     p.set_defaults(func=cmd_send)
 
     p = sub.add_parser("await", help="inspect durable task records")

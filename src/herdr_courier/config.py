@@ -56,6 +56,11 @@ class Hold:
 
 
 @dataclass(frozen=True)
+class Files:
+    inbox: str = defaults.FILES_INBOX
+
+
+@dataclass(frozen=True)
 class Config:
     panes: Panes = Panes()
     doctor: Doctor = Doctor()
@@ -63,6 +68,7 @@ class Config:
     mailbox: Mailbox = Mailbox()
     hold: Hold = Hold()
     ledger: Ledger = Ledger()
+    files: Files = Files()
     path: Path | None = None
 
 
@@ -73,6 +79,7 @@ SECTIONS = {
     "mailbox": Mailbox,
     "hold": Hold,
     "ledger": Ledger,
+    "files": Files,
 }
 
 

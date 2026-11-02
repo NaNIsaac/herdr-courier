@@ -60,3 +60,9 @@ summary_to = { boss = "secretary", secretary = "boss" }
 # Seconds a held message waits before it fails; a lost session of any other agent waits as long.
 ttl = 14400.0
 summary_every = 900.0
+
+[files]
+# courier send --file copies each file to <inbox>/YYYYMMDD-HHMMSS-<message id>/ on this PC and
+# names that copy in the message. "" is the inbox folder in the state directory; ~ and environment
+# variables are expanded. At most 10 files, 25 MB each and 100 MB in all go with one message.
+inbox = ""

@@ -30,3 +30,5 @@ HOLD_SUMMARY_TO = {"boss": "secretary", "secretary": "boss"}
 # A planned restart takes minutes; an outage that outlasts this needs a person anyway.
 HOLD_TTL = 4 * 3600.0
 HOLD_SUMMARY_EVERY = 15 * 60.0
+# Where `courier send --file` copies files on this PC; "" is the inbox folder in the state directory.
+FILES_INBOX = ""

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `courier send --file PATH` (repeatable) copies files into this PC's inbox folder,
+  `<inbox>/YYYYMMDD-HHMMSS-<message id>/`, and adds one line per file naming the copy, with its
+  origin, size and SHA-256 prefix as information. `MACHINE:PATH` fetches with scp. At most 10
+  files, 25 MB each, 100 MB in all; any failed copy sends nothing and removes the copies. The
+  mailbox records them as `attachments`; `files.inbox` sets the folder.
+
 - Retry Enter once for a confirmed pending multiline paste, without repasting its text.
   Fresh identity, hold, focus and input checks guard recovery; restarts never replay the key.
 

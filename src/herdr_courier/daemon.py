@@ -12,6 +12,7 @@ import io
 import json
 import math
 import os
+import re
 import secrets
 import sys
 import threading
@@ -24,7 +25,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from . import mailbox, ovis
+from . import attach, mailbox, ovis
 from .config import ConfigError, config_path, load
 from .core.queue import Dispatcher, DispatchError, LedgerCapacity, WrongServer
 from .core.transport import CliHerdr, HerdrError, PaneHerdr, same_socket
@@ -36,6 +37,9 @@ MAX_BODY = 64 * 1024
 API_VERSION = 1
 MAX_HOLD_SECONDS = 7 * 24 * 3600
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "[::1]"})
+ITEM_ID = re.compile(r"[0-9a-f]{10}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
+ATTACHMENT_KEYS = frozenset({"path", "from_machine", "from_path", "size", "sha256"})
 
 if os.name == "nt":
     import msvcrt
@@ -181,6 +185,28 @@ def _text(body: dict, key: str, low: int, high: int, default: str | None = None)
     return value
 
 
+def _attachments(body: dict) -> list[dict]:
+    """The files ``courier send --file`` already copied, as the mailbox records them."""
+    value = body.get("attachments", [])
+    if not isinstance(value, list) or len(value) > attach.MAX_FILES:
+        raise BadRequest(400, f"attachments must be a list of at most {attach.MAX_FILES}")
+    out = []
+    for entry in value:
+        if not isinstance(entry, dict) or set(entry) != ATTACHMENT_KEYS:
+            raise BadRequest(
+                400, f"each attachment has exactly {', '.join(sorted(ATTACHMENT_KEYS))}"
+            )
+        for key in ("path", "from_machine", "from_path"):
+            _text(entry, key, 1, 1024)
+        size = entry["size"]
+        if isinstance(size, bool) or not isinstance(size, int) or not 0 <= size <= attach.MAX_FILE:
+            raise BadRequest(400, "attachment size is out of range")
+        if not isinstance(entry["sha256"], str) or not SHA256.fullmatch(entry["sha256"]):
+            raise BadRequest(400, "attachment sha256 must be 64 hex digits")
+        out.append(entry)
+    return out
+
+
 def _number(body: dict, key: str, default: float | None, low: float, high: float | None) -> float:
     value = body.get(key, default)
     if isinstance(value, bool) or not isinstance(value, int | float):
@@ -228,6 +254,12 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
             reopen = body.get("reopen", False)
             if not isinstance(reopen, bool):
                 raise BadRequest(400, "reopen must be true or false")
+            item_id = body.get("id")
+            if item_id is not None and not (
+                isinstance(item_id, str) and ITEM_ID.fullmatch(item_id)
+            ):
+                raise BadRequest(400, "id must be 10 lowercase hex digits")
+            attachments = _attachments(body)
             item = run(
                 lambda: d.send_task(
                     target,
@@ -237,15 +269,17 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
                     client_id=client_id,
                     task=body.get("task"),
                     reopen=reopen,
+                    item_id=item_id,
                 )
             )
             if service.mailbox:
                 try:
-                    mailbox.add(service.root, item)
+                    mailbox.add(service.root, item, attachments)
                 except OSError as exc:
                     # The mailbox is a second copy; the queued item is delivered either way.
                     print(f"courier serve: mailbox copy of {item.id} not written: {exc}")
-            return {"item": asdict(item), "server": d.server}
+            # Tells the client this server took its id, so a different id means another item.
+            return {"item": asdict(item), "server": d.server, "attachments": len(attachments)}
         case "GET", "await/list":
             with d.lock:
                 return {"tasks": [dict(t) for t in d.tasks.values()]}

@@ -159,6 +159,27 @@ courier send boss "[lane] need a decision" --wait --timeout 120000
 `--wait`가 없으면 `send`는 큐에 넣자마자 돌아옵니다. 있으면 전달될 때까지, 그리고
 `herdr agent prompt --wait`처럼 에이전트가 응답을 마칠 때까지 기다립니다.
 
+### 메시지에 파일 붙이기
+
+```sh
+courier send boss "[lane] the plot looks off" --file out/plot.png --file out/fit.json
+ssh lab-pc courier send boss "photo from home" --file home-pc:C:/Users/me/photo.jpg
+```
+
+`courier send`는 파일을 자기가 도는 PC, 곧 메시지를 입력할 데몬이 있는 PC의 inbox 폴더에
+`<inbox>/YYYYMMDD-HHMMSS-<메시지 id>/<원래 이름>`으로 복사합니다. 메시지에는 파일마다 그 복사본을
+가리키는 줄이 하나씩 붙으므로, 받는 에이전트는 자기 PC의 경로를 바로 엽니다.
+
+```text
+file: X:\inbox\20261102-215301-3f2a9c1d0e\photo.jpg (from home-pc C:/Users/me/photo.jpg, 503 KB, sha256 9b1c0e7a44d2)
+```
+
+괄호 안은 파일이 어디서 왔는지 알려 주는 정보일 뿐입니다. `MACHINE:PATH`로 쓰면 다른 PC의 파일을
+`scp`로 가져오므로 보내는 쪽에서 따로 복사할 필요가 없습니다. 콜론 앞이 한 글자이면 머신이 아니라
+Windows 드라이브로 봅니다. 메시지 하나에 파일 10개, 하나에 25 MB, 합계 100 MB까지 붙습니다. 복사가
+하나라도 실패하면 아무것도 보내지 않고, 이미 복사한 것을 지우고, 이유와 함께 1로 끝납니다. 우편함을
+켜 두면 메시지 기록의 `attachments`에도 파일 목록이 남습니다([docs/mailbox.md](docs/mailbox.md)).
+
 ### 폰에서 긴 메시지 입력
 
 ```sh
@@ -205,7 +226,7 @@ hold, 지난 한 시간의 실패, journal, 설정 파일, pane에 입력하는 
 | 명령 | 하는 일 |
 | --- | --- |
 | `courier serve [--port N] [--tick S]` | 데몬을 포그라운드로 실행 (port 기본값 0은 빈 포트를 고름); `hc serve`, `hcd`도 같음 |
-| `courier send TARGET TEXT [--wait] [--until STATUS] [--timeout MS] [--source NAME] [--human]` | 메시지를 큐에 넣음. `--human`은 큐의 에이전트 메시지보다 앞에 넣음 |
+| `courier send TARGET TEXT [--wait] [--until STATUS] [--timeout MS] [--source NAME] [--human] [--file PATH...]` | 메시지를 큐에 넣음. `--human`은 큐의 에이전트 메시지보다 앞에 넣음. `--file`은 파일을 이 PC의 inbox로 복사하고 메시지에 그 경로를 적음 |
 | `courier status [TARGET] [--recent N] [--json] [--width N]` | pane별 큐, hold, 마지막 관찰 |
 | `courier hold TARGET [--ttl SECONDS] [--reason TEXT] [--owner NAME]` | 데몬이 그 pane에 입력하지 못하게 함 |
 | `courier release TARGET` | hold 해제 |
@@ -242,7 +263,7 @@ herdr agent prompt boss "[lane] status report"
 상태 폴더는 Windows에서 `%LOCALAPPDATA%\herdr-courier`, 그 밖에서는
 `$XDG_STATE_HOME/herdr-courier`(`~/.local/state/herdr-courier`)이며 `COURIER_STATE_DIR`로 옮길 수
 있습니다. 사용자의 `config.toml`과 데몬의 `journal.jsonl`, `lock`, `endpoint.json`(포트와 접근
-토큰)이 들어 있고, `mailbox.write`를 켜면 `mailbox/<target>.jsonl`과 `mailbox/hook.log`도 생깁니다. 0.1의 상태 폴더(`herdr-console`)는 데몬이 처음 뜰 때 새 이름으로 옮깁니다.
+토큰)이 들어 있고, `mailbox.write`를 켜면 `mailbox/<target>.jsonl`과 `mailbox/hook.log`도 생깁니다. `courier send --file`은 `files.inbox`로 다른 폴더를 정하지 않으면 `inbox/`에 복사합니다. 0.1의 상태 폴더(`herdr-console`)는 데몬이 처음 뜰 때 새 이름으로 옮깁니다.
 
 ### 설정
 
@@ -263,6 +284,7 @@ herdr agent prompt boss "[lane] status report"
 | `ovis.settle` | `3.0` | 턴이 끝난 뒤 에이전트 상태가 이 초 동안 그대로여야 그런 메시지를 보냄 |
 | `mailbox.write` | `false` | 데몬이 큐에 넣는 모든 메시지를 우편함에도 남김 |
 | `mailbox.readers` | `[]` | `courier inbox --hook`이 열린 메시지를 돌려주는 에이전트 |
+| `files.inbox` | `""` | `courier send --file`이 이 PC에서 파일을 복사하는 폴더. `""`는 상태 폴더의 `inbox/` |
 
 ## 동작 방식
 

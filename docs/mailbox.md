@@ -17,9 +17,12 @@ Each line is one JSON record:
 
 | kind | written by | fields |
 | --- | --- | --- |
-| `message` | courier serve, when it queues the item | `id` (the journal's), `to`, `from`, `created`, `human`, `text` |
+| `message` | courier serve, when it queues the item | `id` (the journal's), `to`, `from`, `created`, `human`, `text`, and `attachments` when the message came with `courier send --file` |
 | `shown` | `courier inbox --hook`, when it puts the message into the agent's context | `id`, `at`, `event` |
 | `done` | `courier inbox --ack ID` | `id`, `at` |
+
+Each attachment is `{path, from_machine, from_path, size, sha256}`: the copy on this PC, the
+machine and path it came from, its size in bytes and its SHA-256.
 
 A message is `new` until it is shown, then `read`, then `done`. A client retry that returns the
 same queued item adds no second `message` line. A line cut short by a crash is skipped.

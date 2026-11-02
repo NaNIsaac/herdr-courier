@@ -13,7 +13,7 @@ def files(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
     (src / "a.png").write_bytes(b"\x89PNG" + b"0" * 2000)
-    (src / "notes.txt").write_text("beam at 9C", encoding="utf-8")
+    (src / "notes.txt").write_text("sample notes", encoding="utf-8")
     return src
 
 
@@ -39,7 +39,7 @@ def test_files_land_in_one_folder_named_after_the_message(files, tmp_path):
 
 
 def test_a_machine_prefix_fetches_and_a_drive_letter_does_not():
-    assert attach.split("home-pc:C:/Users/me/a.png") == ("home-pc", "C:/Users/me/a.png")
+    assert attach.split("pc-b:C:/Users/me/a.png") == ("pc-b", "C:/Users/me/a.png")
     assert attach.split("C:/Users/me/a.png") == (None, "C:/Users/me/a.png")
     assert attach.split("/tmp/a.png") == (None, "/tmp/a.png")
 
@@ -52,11 +52,11 @@ def test_remote_files_keep_their_origin(tmp_path):
         (folder / name).write_bytes(b"x" * 10)
 
     _, done = attach.stage(
-        [r"home-pc:C:\Users\me\shot.png"], tmp_path / "inbox", "0123456789", fetch=fetch
+        [r"pc-b:C:\Users\me\shot.png"], tmp_path / "inbox", "0123456789", fetch=fetch
     )
-    assert fetched == [("home-pc", r"C:\Users\me\shot.png")]
+    assert fetched == [("pc-b", r"C:\Users\me\shot.png")]
     assert (done[0].from_machine, done[0].from_path, done[0].size) == (
-        "home-pc",
+        "pc-b",
         r"C:\Users\me\shot.png",
         10,
     )
@@ -69,10 +69,8 @@ def test_one_failed_copy_leaves_nothing_behind(files, tmp_path):
     def fetch(machine, path, folder, name):
         raise attach.AttachError(f"scp from {machine} failed: No such file")
 
-    with pytest.raises(attach.AttachError, match="scp from home-pc failed"):
-        attach.stage(
-            [str(files / "a.png"), "home-pc:C:/gone.png"], inbox, "0123456789", fetch=fetch
-        )
+    with pytest.raises(attach.AttachError, match="scp from pc-b failed"):
+        attach.stage([str(files / "a.png"), "pc-b:C:/gone.png"], inbox, "0123456789", fetch=fetch)
     assert list(inbox.iterdir()) == []
 
 
@@ -105,7 +103,7 @@ def test_a_remote_file_over_the_limit_is_removed_after_the_copy(tmp_path, monkey
         (folder / name).write_bytes(b"x" * 10)
 
     with pytest.raises(attach.AttachError, match="per file"):
-        attach.stage(["home-pc:/big.bin"], inbox, "0123456789", fetch=fetch)
+        attach.stage(["pc-b:/big.bin"], inbox, "0123456789", fetch=fetch)
     assert list(inbox.iterdir()) == []
 
 

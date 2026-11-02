@@ -50,7 +50,7 @@ def inbox_dir(setting: str) -> Path:
 
 
 def split(spec: str) -> tuple[str | None, str]:
-    """``home-pc:C:/a.png`` is (``home-pc``, ``C:/a.png``); ``C:/a.png`` is local."""
+    """``pc-b:C:/a.png`` is (``pc-b``, ``C:/a.png``); ``C:/a.png`` is local."""
     if m := _REMOTE.fullmatch(spec):
         return m["machine"], m["path"]
     return None, spec

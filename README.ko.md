@@ -163,7 +163,7 @@ courier send boss "[lane] need a decision" --wait --timeout 120000
 
 ```sh
 courier send boss "[lane] the plot looks off" --file out/plot.png --file out/fit.json
-ssh lab-pc courier send boss "photo from home" --file home-pc:C:/Users/me/photo.jpg
+ssh pc-a courier send boss "photo from pc-b" --file pc-b:C:/Users/me/photo.jpg
 ```
 
 `courier send`는 파일을 자기가 도는 PC, 곧 메시지를 입력할 데몬이 있는 PC의 inbox 폴더에
@@ -171,7 +171,7 @@ ssh lab-pc courier send boss "photo from home" --file home-pc:C:/Users/me/photo.
 가리키는 줄이 하나씩 붙으므로, 받는 에이전트는 자기 PC의 경로를 바로 엽니다.
 
 ```text
-file: X:\inbox\20261102-215301-3f2a9c1d0e\photo.jpg (from home-pc C:/Users/me/photo.jpg, 503 KB, sha256 9b1c0e7a44d2)
+file: D:\inbox\20261102-215301-3f2a9c1d0e\photo.jpg (from pc-b C:/Users/me/photo.jpg, 503 KB, sha256 9b1c0e7a44d2)
 ```
 
 괄호 안은 파일이 어디서 왔는지 알려 주는 정보일 뿐입니다. `MACHINE:PATH`로 쓰면 다른 PC의 파일을

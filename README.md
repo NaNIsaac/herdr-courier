@@ -296,7 +296,7 @@ and then, like `herdr agent prompt --wait`, for the agent to settle.
 
 ```sh
 courier send boss "[lane] the plot looks off" --file out/plot.png --file out/fit.json
-ssh lab-pc courier send boss "photo from home" --file home-pc:C:/Users/me/photo.jpg
+ssh pc-a courier send boss "photo from pc-b" --file pc-b:C:/Users/me/photo.jpg
 ```
 
 `courier send` copies each file into the inbox folder of the PC it runs on, the PC whose daemon
@@ -304,7 +304,7 @@ types the message, at `<inbox>/YYYYMMDD-HHMMSS-<message id>/<original name>`. Th
 line per file naming that copy, so the agent opens a path on its own PC:
 
 ```text
-file: X:\inbox\20261102-215301-3f2a9c1d0e\photo.jpg (from home-pc C:/Users/me/photo.jpg, 503 KB, sha256 9b1c0e7a44d2)
+file: D:\inbox\20261102-215301-3f2a9c1d0e\photo.jpg (from pc-b C:/Users/me/photo.jpg, 503 KB, sha256 9b1c0e7a44d2)
 ```
 
 The part in brackets says where the file came from and is only information. `MACHINE:PATH`

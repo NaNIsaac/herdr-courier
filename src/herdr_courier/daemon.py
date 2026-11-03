@@ -500,6 +500,7 @@ def serve(args: argparse.Namespace) -> int:
             summary_every=config.hold.summary_every,
             controller=config.ledger.controller,
             secretary=config.ledger.secretary,
+            routes_in=root,
         )
     except (HerdrError, WrongServer) as exc:
         lock.release()

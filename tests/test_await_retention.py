@@ -307,7 +307,8 @@ def test_nonawait_item_and_journal_match_original_schema(herdr, make_dispatcher,
         "terminal": None,
         "held_until": None,
     }
-    assert json.dumps(asdict(item)) == json.dumps(expected)
+    # A reply names the route field; the journal leaves it out while it is unused.
+    assert json.dumps(asdict(item)) == json.dumps(expected | {"routed_from": None})
     entry = {
         "event": "item",
         "id": item.id,

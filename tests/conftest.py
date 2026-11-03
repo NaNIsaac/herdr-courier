@@ -43,6 +43,8 @@ class FakeHerdr:
         self.panes: dict[str, FakePane] = {}
         self.names: dict[str, str] = {}
         self.down = False
+        # Panes with no agent, as a person's shell.
+        self.shells: set[str] = set()
 
     def add(self, pane_id: str, name: str | None = None, **kw) -> FakePane:
         self.panes[pane_id] = FakePane(**kw)
@@ -68,6 +70,11 @@ class FakeHerdr:
             "agent_session": {"value": pane.session},
             "terminal_id": pane.terminal,
         }
+
+    def pane_list(self) -> list[dict]:
+        if self.down:
+            raise HerdrError("server_not_running", "no herdr server is running at the socket")
+        return [{"pane_id": p} for p in [*self.panes, *sorted(self.shells)]]
 
     def agent_list(self) -> list[dict]:
         return [self.agent_get(p) for p in self.panes]

@@ -787,7 +787,7 @@ def main(argv: list[str] | None = None) -> int:
         help="send messages for one agent name to another, as to a deputy",
         description="With no arguments, list the routes. A route applies to courier send, also to "
         "messages already queued; hold, release and status still name the pane itself. Only "
-        "boss, secretary or a terminal outside herdr may change a route.",
+        "boss, secretary, a herdr pane with no agent or a terminal outside herdr may change a route.",
     )
     p.add_argument("name", nargs="?", help="agent name the senders use")
     p.add_argument("to", nargs="?", help="agent name that gets its messages")

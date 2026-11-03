@@ -228,7 +228,9 @@ def test_only_boss_secretary_or_a_terminal_outside_herdr_change_a_route(herdr, r
     herdr.add("w1:p3", "lane")
     herdr.add("w1:p4", "secretary")
     d = routed()
-    with pytest.raises(DispatchError, match=r"need boss, secretary .* not lane \(w1:p3\)"):
+    with pytest.raises(
+        DispatchError, match=r"need boss, secretary, a shell pane .* not lane \(w1:p3\)"
+    ):
         d.set_route("boss", "lane", sender_pane="w1:p3")
     with pytest.raises(DispatchError, match="cannot identify"):
         d.set_route("boss", "lane", sender_pane="w9:p9")
@@ -271,3 +273,20 @@ def test_the_file_is_read_at_the_start_only(herdr, routed, tmp_path):
     d = routed()
     routes.save(tmp_path, {"boss": "lane"})
     assert d.enqueue("boss", "report", source="icc").pane_id == "w1:p1"
+
+
+def test_a_shell_pane_herdr_knows_without_an_agent_may_change_a_route(herdr, routed, tmp_path):
+    herdr.add("w1:p2", "boss-deputy")
+    herdr.shells.add("w1:p7")
+    d = routed()
+    assert d.set_route("boss", "boss-deputy", sender_pane="w1:p7") == {"boss": "boss-deputy"}
+    log = (tmp_path / "routes.log").read_text(encoding="utf-8")
+    assert log.rstrip().endswith("boss → boss-deputy by a shell pane (w1:p7)")
+
+
+def test_a_pane_herdr_does_not_list_is_not_taken_for_a_shell(herdr, routed):
+    d = routed()
+    herdr.down = True
+    with pytest.raises(DispatchError, match="cannot identify"):
+        d.set_route("boss", "lane", sender_pane="w1:p7")
+    assert d.routes == {}

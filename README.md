@@ -357,7 +357,8 @@ take agent names, never pane ids, and a route that would loop (`a` to `b` to `a`
 `hold`, `release` and `status TARGET` still name the pane itself, and while routed the deputy
 may also cancel and reassign tasks as the controller.
 
-Only `boss`, `secretary` or a terminal outside herdr may change a route, so one agent cannot take
+Only `boss`, `secretary`, a herdr pane with no agent in it (a shell) or a terminal outside herdr
+may change a route, so one agent cannot take
 another's messages. The change goes through the daemon, which keeps the routes in `routes.json`
 and adds a line to `routes.log` saying who changed what and when. `courier status` and
 `courier agents` list the routes, and warn when no pane runs a route's target.

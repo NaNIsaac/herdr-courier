@@ -223,7 +223,8 @@ courier route boss --clear
 `status TARGET`은 여전히 그 pane 자체를 가리키며, route 중에는 대리도 controller로서 task를
 취소하고 재배정할 수 있습니다.
 
-route는 `boss`, `secretary`, 또는 herdr 밖의 터미널만 바꿀 수 있어서, 한 에이전트가 다른 에이전트의
+route는 `boss`, `secretary`, 에이전트가 없는 herdr pane(셸), 또는 herdr 밖의 터미널만 바꿀 수 있어서,
+한 에이전트가 다른 에이전트의
 메시지를 가로챌 수 없습니다. 변경은 데몬을 거치며, 데몬은 route를 `routes.json`에 두고 누가 언제
 무엇을 바꿨는지 `routes.log`에 한 줄씩 남깁니다. `courier status`와 `courier agents`는 route를
 보여 주고, route 대상을 실행하는 pane이 없으면 경고합니다.

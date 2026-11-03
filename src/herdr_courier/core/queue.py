@@ -1288,18 +1288,25 @@ class Dispatcher:
 
     def _route_changer(self, sender_pane: str) -> str:
         """Who asks for a route change, refused unless it is the controller or the secretary in
-        their own pane, or a terminal outside herdr; a lane must not take another's messages."""
+        their own pane, a herdr pane that herdr says runs no agent (a person's shell), or a
+        terminal outside herdr; a lane must not take another's messages."""
         if not sender_pane:
             return "a terminal outside herdr"
         try:
-            sender = self.herdr.agent_get(sender_pane)
+            agents = self.herdr.agent_list()
+            panes = self.herdr.pane_list()
         except HerdrError as exc:
             raise DispatchError("cannot identify sender pane") from exc
+        sender = next((a for a in agents if a.get("pane_id") == sender_pane), None)
+        if sender is None:
+            if any(p.get("pane_id") == sender_pane for p in panes):
+                return f"a shell pane ({sender_pane})"
+            raise DispatchError("cannot identify sender pane")
         name = sender.get("name")
-        if sender.get("pane_id") != sender_pane or name not in {self.controller, self.secretary}:
+        if name not in {self.controller, self.secretary}:
             raise DispatchError(
-                f"route changes need {self.controller}, {self.secretary} or a terminal outside "
-                f"herdr, not {name or 'an unnamed pane'} ({sender_pane})"
+                f"route changes need {self.controller}, {self.secretary}, a shell pane or a "
+                f"terminal outside herdr, not {name or 'an unnamed agent'} ({sender_pane})"
             )
         return f"{name} ({sender_pane})"
 

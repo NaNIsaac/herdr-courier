@@ -6,7 +6,8 @@
   stands in for boss; `courier route NAME --clear` drops it and `courier route` lists the routes.
   Queued messages not yet typed in follow a change. A target that is not running, closes or
   starts another agent sends its messages back to NAME. Loops and pane ids are refused. Only
-  the controller, the secretary or a terminal outside herdr may change a route; the daemon
+  the controller, the secretary, a herdr pane with no agent or a terminal outside herdr may
+  change a route; the daemon
   keeps `routes.json` and writes each change to `routes.log`. `status` and `agents` show the
   routes, and the deputy passes the controller check while routed.
 

@@ -1,7 +1,7 @@
 import pytest
 
 from herdr_courier import routes
-from herdr_courier.core.queue import ROUTE_MISSED, Dispatcher, State
+from herdr_courier.core.queue import ROUTE_MISSED, Dispatcher, DispatchError, State
 
 
 @pytest.fixture
@@ -39,7 +39,7 @@ def test_clearing_the_route_sends_to_the_name_again(herdr, routed, run, tmp_path
     routes.save(tmp_path, {"boss": "boss-deputy"})
     d = routed()
     assert d.enqueue("boss", "one", source="lane").pane_id == "w1:p2"
-    routes.save(tmp_path, {})
+    d.set_route("boss", None, sender_pane="")
     item = d.enqueue("boss", "two", source="lane")
     assert (item.pane_id, item.routed_from) == ("w1:p1", None)
     run(d, 3)
@@ -112,7 +112,7 @@ def test_turning_a_route_on_moves_queued_messages_but_not_one_in_flight(
     d.enqueue("boss", "two", source="icc")
     run(d, 2)
     assert boss.submitted == []
-    routes.save(tmp_path, {"boss": "boss-deputy"})
+    d.set_route("boss", "boss-deputy", sender_pane="")
     run(d, 3)
     assert deputy.submitted == ["one", "two"]
     assert (first.target, first.routed_from, first.session) == ("boss-deputy", "boss", "d1")
@@ -122,7 +122,7 @@ def test_turning_a_route_on_moves_queued_messages_but_not_one_in_flight(
     d.hold("boss-deputy", owner="test", reason="busy", ttl=None)
     third = d.enqueue("boss", "three", source="lane")
     assert third.pane_id == "w1:p2"
-    routes.save(tmp_path, {})
+    d.set_route("boss", None, sender_pane="")
     run(d, 3)
     assert (third.target, third.routed_from, third.state) == ("boss", None, State.SENT)
     assert boss.submitted == ["three"]
@@ -135,7 +135,7 @@ def test_held_messages_for_a_missing_boss_go_to_the_deputy_when_routed(
     item = d.enqueue("boss", "report", source="lane")
     assert item.state is State.WAITING
     deputy = herdr.add("w1:p2", "boss-deputy")
-    routes.save(tmp_path, {"boss": "boss-deputy"})
+    d.set_route("boss", "boss-deputy", sender_pane="")
     run(d, 3)
     assert deputy.submitted == ["report"]
     assert "boss" not in d.status()["held"]
@@ -218,5 +218,56 @@ def test_the_deputy_acts_as_controller_while_routed(herdr, routed, tmp_path):
     d.send_task("lane", "do it", source="w1:p1", task=task)
     with pytest.raises(Exception, match="controller"):
         d.cancel_task("BL-1", sender_pane="w1:p2")
-    routes.save(tmp_path, {"boss": "boss-deputy"})
+    d.set_route("boss", "boss-deputy", sender_pane="")
     assert d.cancel_task("BL-1", sender_pane="w1:p2")["state"] == "CANCELLED"
+
+
+def test_only_boss_secretary_or_a_terminal_outside_herdr_change_a_route(herdr, routed, tmp_path):
+    herdr.add("w1:p1", "boss")
+    herdr.add("w1:p2", "boss-deputy")
+    herdr.add("w1:p3", "lane")
+    herdr.add("w1:p4", "secretary")
+    d = routed()
+    with pytest.raises(DispatchError, match=r"need boss, secretary .* not lane \(w1:p3\)"):
+        d.set_route("boss", "lane", sender_pane="w1:p3")
+    with pytest.raises(DispatchError, match="cannot identify"):
+        d.set_route("boss", "lane", sender_pane="w9:p9")
+    assert d.routes == {}
+    assert not routes.path(tmp_path).exists()
+    assert d.set_route("boss", "boss-deputy", sender_pane="w1:p1") == {"boss": "boss-deputy"}
+    assert d.set_route("boss", None, sender_pane="w1:p4") == {}
+    assert d.set_route("boss", "boss-deputy", sender_pane="") == {"boss": "boss-deputy"}
+    log = (tmp_path / "routes.log").read_text(encoding="utf-8").splitlines()
+    assert [line.split(" ", 1)[1] for line in log] == [
+        "boss → boss-deputy by boss (w1:p1)",
+        "boss route cleared by secretary (w1:p4)",
+        "boss → boss-deputy by a terminal outside herdr",
+    ]
+    assert routes.load(tmp_path) == {"boss": "boss-deputy"}
+
+
+def test_a_lane_cannot_take_boss_messages_and_nothing_moves(herdr, routed, run):
+    boss = herdr.add("w1:p1", "boss")
+    lane = herdr.add("w1:p3", "lane")
+    d = routed()
+    with pytest.raises(DispatchError):
+        d.set_route("boss", "lane", sender_pane="w1:p3")
+    d.enqueue("boss", "report", source="icc")
+    run(d, 3)
+    assert (boss.submitted, lane.submitted) == (["report"], [])
+
+
+def test_a_loop_through_set_route_is_refused(herdr, routed):
+    d = routed()
+    d.set_route("boss", "boss-deputy", sender_pane="")
+    with pytest.raises(DispatchError, match="loop"):
+        d.set_route("boss-deputy", "boss", sender_pane="")
+    assert d.routes == {"boss": "boss-deputy"}
+
+
+def test_the_file_is_read_at_the_start_only(herdr, routed, tmp_path):
+    herdr.add("w1:p1", "boss")
+    herdr.add("w1:p3", "lane")
+    d = routed()
+    routes.save(tmp_path, {"boss": "lane"})
+    assert d.enqueue("boss", "report", source="icc").pane_id == "w1:p1"

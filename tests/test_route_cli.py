@@ -18,52 +18,81 @@ class FakeHerdr:
 
 
 @pytest.fixture
-def herdr_with(monkeypatch):
-    def use(*names):
-        monkeypatch.setattr(cli, "CliHerdr", lambda: FakeHerdr(*names))
+def served(start, herdr, monkeypatch, tmp_path):
+    """courier serve with boss, boss-deputy, lane and secretary; the CLI asks it from outside herdr."""
+    for pane, name in (("w1:p1", "boss"), ("w1:p2", "boss-deputy"), ("w1:p3", "lane")):
+        herdr.add(pane, name)
+    herdr.add("w1:p4", "secretary")
+    monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+    monkeypatch.delenv("HERDR_SOCKET_PATH", raising=False)
+    monkeypatch.setattr(cli, "CliHerdr", lambda: FakeHerdr("boss", "boss-deputy", "lane"))
+    start(herdr)
+    return tmp_path
 
-    return use
 
-
-def test_route_sets_lists_and_clears(state_dir, herdr_with, capsys):
-    herdr_with("boss", "boss-deputy")
+def test_route_sets_lists_and_clears(served, capsys):
     assert cli.main(["route", "boss", "boss-deputy"]) == 0
     assert capsys.readouterr().out == "boss → boss-deputy\n"
-    assert routes.load(state_dir) == {"boss": "boss-deputy"}
+    assert routes.load(served) == {"boss": "boss-deputy"}
     assert cli.main(["route"]) == 0
     assert capsys.readouterr().out == "boss → boss-deputy\n"
     assert cli.main(["route", "boss", "--clear"]) == 0
     assert capsys.readouterr().out == "boss: route cleared\n"
-    assert routes.load(state_dir) == {}
+    assert routes.load(served) == {}
     assert cli.main(["route"]) == 0
     assert capsys.readouterr().out == "no routes\n"
     assert cli.main(["route", "boss", "--clear"]) == 0
     assert capsys.readouterr().out == "no route for boss\n"
+    log = (served / "routes.log").read_text(encoding="utf-8")
+    assert "boss → boss-deputy by a terminal outside herdr" in log
 
 
-def test_a_loop_is_refused_and_the_file_kept(state_dir, herdr_with, capsys):
-    herdr_with("boss", "boss-deputy")
+def test_a_lane_pane_is_refused(served, monkeypatch, capsys):
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:p3")
+    with pytest.raises(SystemExit) as exit_:
+        cli.main(["route", "boss", "lane"])
+    assert exit_.value.code == cli.EXIT_FAILED
+    assert "route changes need boss, secretary" in capsys.readouterr().err
+    assert not routes.path(served).exists()
+
+
+def test_boss_and_secretary_panes_may_change_a_route(served, monkeypatch, capsys):
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:p1")
+    assert cli.main(["route", "boss", "boss-deputy"]) == 0
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:p4")
+    assert cli.main(["route", "boss", "--clear"]) == 0
+    assert capsys.readouterr().out.splitlines() == ["boss → boss-deputy", "boss: route cleared"]
+
+
+def test_a_loop_is_refused_and_the_route_kept(served, capsys):
     cli.main(["route", "boss", "boss-deputy"])
-    assert cli.main(["route", "boss-deputy", "boss"]) == cli.EXIT_FAILED
+    with pytest.raises(SystemExit):
+        cli.main(["route", "boss-deputy", "boss"])
     assert "route loop: boss-deputy → boss → boss-deputy" in capsys.readouterr().err
-    assert routes.load(state_dir) == {"boss": "boss-deputy"}
+    assert routes.load(served) == {"boss": "boss-deputy"}
 
 
-def test_a_route_to_an_agent_no_pane_runs_is_set_with_a_warning(state_dir, herdr_with, capsys):
-    herdr_with("boss")
-    assert cli.main(["route", "boss", "boss-deputy", "--json"]) == 0
+def test_a_route_to_an_agent_no_pane_runs_is_set_with_a_warning(served, capsys):
+    assert cli.main(["route", "boss", "boss-2", "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["routes"] == {"boss": "boss-deputy"}
+    assert out["routes"] == {"boss": "boss-2"}
     assert out["warnings"] == [
-        "boss → boss-deputy, but no pane runs boss-deputy: messages for boss go to boss"
+        "boss → boss-2, but no pane runs boss-2: messages for boss go to boss"
     ]
 
 
-def test_the_file_is_replaced_whole(state_dir, herdr_with):
-    herdr_with("boss", "boss-deputy")
-    cli.main(["route", "boss", "boss-deputy"])
-    assert json.loads(routes.path(state_dir).read_text(encoding="utf-8")) == {"boss": "boss-deputy"}
-    assert list(state_dir.glob("routes.*.tmp")) == []
+def test_a_change_needs_courier_serve_but_a_list_does_not(state_dir, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "CliHerdr", lambda: FakeHerdr("boss"))
+    routes.save(state_dir, {"boss": "boss-deputy"})
+    with pytest.raises(SystemExit) as exit_:
+        cli.main(["route", "boss", "--clear"])
+    assert exit_.value.code == cli.EXIT_UNAVAILABLE
+    assert routes.load(state_dir) == {"boss": "boss-deputy"}
+    capsys.readouterr()
+    assert cli.main(["route"]) == 0
+    out = capsys.readouterr()
+    assert out.out == "boss → boss-deputy\n"
+    assert "courier serve is not running" in out.err
 
 
 def test_status_shows_the_routes():

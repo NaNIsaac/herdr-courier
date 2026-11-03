@@ -148,7 +148,13 @@ def start(tmp_path, monkeypatch):
 
     def go(herdr, *, enabled=True, tick=0.05, server=None, mailbox=False):
         dispatcher = (
-            Dispatcher(herdr, tmp_path / "journal.jsonl", log=lambda _: None, server=server)
+            Dispatcher(
+                herdr,
+                tmp_path / "journal.jsonl",
+                log=lambda _: None,
+                server=server,
+                routes_in=tmp_path,
+            )
             if enabled
             else None
         )

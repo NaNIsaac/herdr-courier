@@ -162,10 +162,12 @@ class Dispatcher:
         in ``summary_to`` is told how many are held. ``wall`` is the clock of those deadlines,
         which survive a restart.
 
-        ``routes_in`` is the state directory whose ``routes.json`` sends one agent name to
-        another (``courier route``). A route is taken when a message is queued, and again for
-        every undelivered message when the file changes; a message whose route target is missing
-        or gone goes to the name it was sent to, so turning a route on or off never drops one."""
+        ``routes_in`` is the state directory whose ``routes.json`` keeps the routes of
+        ``set_route`` (``courier route``) across a restart; it is read only at the start, so a
+        route changes only through a request this process can check. A route is taken when a
+        message is queued, and again for every undelivered message when it changes; a message
+        whose route target is missing or gone goes to the name it was sent to, so turning a
+        route on or off never drops one."""
         self.herdr = herdr
         self.journal = journal
         self.clock = clock
@@ -193,9 +195,9 @@ class Dispatcher:
         self._last_compact_size = 0
         self.routes_in = routes_in
         self.routes: dict[str, str] = {}
-        self._routes_stamp: tuple[int, int] | None = None
         self._routes_changed = False
         self._fallback: set[str] = set()
+        self._load_routes()
         self._replay()
         self._pending_tasks()
         if server:
@@ -1271,36 +1273,66 @@ class Dispatcher:
         except HerdrError as exc:
             raise DispatchError(f"cannot resolve target {target!r}: {exc}") from exc
 
-    def _read_routes(self) -> None:
-        """Read ``routes.json`` again when it changed; a file that cannot be used keeps the last."""
+    def _load_routes(self) -> None:
+        """The routes saved by the last run; a file that cannot be used routes nothing."""
         if self.routes_in is None:
             return
         try:
-            st = routes.path(self.routes_in).stat()
-            stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
-        except FileNotFoundError:
-            stamp = None
-        except OSError as exc:
-            self.log(f"courier: routes not read: {exc}")
-            return
-        with self.lock:
-            if stamp == self._routes_stamp:
-                return
-            # Taken before reading, so a broken file is reported once and not on every tick.
-            self._routes_stamp = stamp
-        try:
-            table = routes.load(self.routes_in) if stamp else {}
+            self.routes = routes.load(self.routes_in)
         except (routes.RouteError, OSError) as exc:
-            self.log(f"courier: routes not changed: {exc}")
+            self.log(f"courier: no routes: {exc}")
             return
+        if self.routes:
+            self._routes_changed = True
+            self.log(f"courier: routes: {', '.join(routes.describe(self.routes))}")
+
+    def _route_changer(self, sender_pane: str) -> str:
+        """Who asks for a route change, refused unless it is the controller or the secretary in
+        their own pane, or a terminal outside herdr; a lane must not take another's messages."""
+        if not sender_pane:
+            return "a terminal outside herdr"
+        try:
+            sender = self.herdr.agent_get(sender_pane)
+        except HerdrError as exc:
+            raise DispatchError("cannot identify sender pane") from exc
+        name = sender.get("name")
+        if sender.get("pane_id") != sender_pane or name not in {self.controller, self.secretary}:
+            raise DispatchError(
+                f"route changes need {self.controller}, {self.secretary} or a terminal outside "
+                f"herdr, not {name or 'an unnamed pane'} ({sender_pane})"
+            )
+        return f"{name} ({sender_pane})"
+
+    def set_route(self, name: str, to: str | None, *, sender_pane: str) -> dict[str, str]:
+        """Route ``name`` to ``to``, or clear its route when ``to`` is None; returns all routes.
+
+        Saved for the next run and written to the audit log ``routes.log``. A message not yet
+        delivered follows the change on the next tick."""
+        who = self._route_changer(sender_pane)
         with self.lock:
-            if table != self.routes:
-                self.routes = table
-                self._routes_changed = True
-                self.log(f"courier: routes: {', '.join(routes.describe(table)) or 'none'}")
+            if to is None:
+                if name not in self.routes:
+                    return dict(self.routes)
+                table = {k: v for k, v in self.routes.items() if k != name}
+                what = f"{name} route cleared"
+            else:
+                try:
+                    table = routes.with_route(self.routes, name, to)
+                except routes.RouteError as exc:
+                    raise DispatchError(str(exc)) from exc
+                what = f"{name} → {to}"
+            if self.routes_in is not None:
+                try:
+                    routes.save(self.routes_in, table)
+                    routes.audit(self.routes_in, f"{what} by {who}")
+                except OSError as exc:
+                    raise DispatchError(f"route not changed: {exc}") from exc
+            self.routes = table
+            self._routes_changed = True
+            self.log(f"courier: {what} by {who}")
+            return dict(table)
 
     def _route(self, name: str) -> str:
-        self._read_routes()
         with self.lock:
             table = self.routes
         try:
@@ -1320,7 +1352,6 @@ class Dispatcher:
     def _apply_routes(self) -> None:
         """Send every undelivered message where its name is routed now, and routed messages whose
         target went away back to the name they were sent to."""
-        self._read_routes()
         with self.lock:
             changed, self._routes_changed = self._routes_changed, False
             fallback, self._fallback = self._fallback, set()

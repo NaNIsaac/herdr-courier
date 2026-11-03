@@ -1,12 +1,14 @@
 """Name routes: messages for one agent name go to another, as when a deputy stands in for boss.
 
-The routes live in ``routes.json`` in the state directory, a JSON object from name to name.
-``courier route`` writes it and courier serve reads it again whenever it changes, so a route
-takes effect without a restart. Only names are routed, never pane ids.
+courier serve keeps the routes in ``routes.json`` in the state directory, a JSON object from
+name to name, and reads it when it starts. A route changes only through ``courier route``,
+which asks courier serve, and each change adds a line to ``routes.log``. Only names are
+routed, never pane ids.
 """
 
 import json
 import os
+import time
 import uuid
 from pathlib import Path
 
@@ -39,11 +41,18 @@ def load(root: Path) -> dict[str, str]:
 
 
 def save(root: Path, routes: dict[str, str]) -> None:
-    """Replace the file in one step, so courier serve never reads half of it."""
+    """Replace the file in one step, so a crash never leaves half of it for the next start."""
     root.mkdir(parents=True, exist_ok=True)
     tmp = root / f"routes.{uuid.uuid4().hex}.tmp"
     tmp.write_text(json.dumps(routes, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path(root))
+
+
+def audit(root: Path, line: str) -> None:
+    """One line per change, with the local time: who changed which route."""
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    with (root / "routes.log").open("a", encoding="utf-8") as f:
+        f.write(f"{stamp} {line}\n")
 
 
 def chain(routes: dict[str, str], name: str) -> list[str]:

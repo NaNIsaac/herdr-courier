@@ -207,6 +207,27 @@ courier panes
 `--color=never`로 끄고, 출력이 터미널이 아닐 때도 색을 원하면 `--color`를 붙입니다. Windows의
 herdr pane도 터미널로 보이지 않으므로 거기서는 `--color`가 필요합니다.
 
+### 대리에게 맡기기
+
+```sh
+courier route boss boss-deputy
+courier route
+courier route boss --clear
+```
+
+`boss`를 `boss-deputy`로 돌려 두면 `boss`에게 보낸 메시지는 모두 `boss-deputy`로 가므로, 보내는
+쪽은 이름 하나만 씁니다. 큐에 들어 있고 아직 입력되지 않은 메시지도 따라 옮겨 가고, 해제하면
+돌아옵니다. `boss-deputy`가 돌고 있지 않거나 그 pane이 닫히거나 다른 에이전트가 뜨면 메시지는
+`boss`로 가고 `send`가 경고를 출력합니다. 잃는 메시지는 없습니다. route는 pane id가 아니라 에이전트
+이름만 받고, 고리가 되는 route(`a`에서 `b`, 다시 `a`)는 거부합니다. `hold`, `release`,
+`status TARGET`은 여전히 그 pane 자체를 가리키며, route 중에는 대리도 controller로서 task를
+취소하고 재배정할 수 있습니다.
+
+route는 `boss`, `secretary`, 또는 herdr 밖의 터미널만 바꿀 수 있어서, 한 에이전트가 다른 에이전트의
+메시지를 가로챌 수 없습니다. 변경은 데몬을 거치며, 데몬은 route를 `routes.json`에 두고 누가 언제
+무엇을 바꿨는지 `routes.log`에 한 줄씩 남깁니다. `courier status`와 `courier agents`는 route를
+보여 주고, route 대상을 실행하는 pane이 없으면 경고합니다.
+
 ### 모두 살아 있는지 확인
 
 ```sh
@@ -231,6 +252,7 @@ hold, 지난 한 시간의 실패, journal, 설정 파일, pane에 입력하는 
 | `courier hold TARGET [--ttl SECONDS] [--reason TEXT] [--owner NAME]` | 데몬이 그 pane에 입력하지 못하게 함 |
 | `courier release TARGET` | hold 해제 |
 | `courier cancel ID` | 큐의 메시지 삭제 |
+| `courier route [NAME [TO]] [--clear] [--json]` | route 목록, NAME에게 갈 메시지를 TO로 보냄, NAME의 route 해제 |
 | `courier agents [--wide] [--json] [--width N] [--color[=WHEN]]` | pane별 탭, 에이전트, 상태, 큐 |
 | `courier panes [--json] [--width N]` | 탭별 pane과 라벨, 작업 폴더 |
 | `courier doctor [--json] [--width N]` | 읽기 전용 상태 점검 |
@@ -263,7 +285,7 @@ herdr agent prompt boss "[lane] status report"
 상태 폴더는 Windows에서 `%LOCALAPPDATA%\herdr-courier`, 그 밖에서는
 `$XDG_STATE_HOME/herdr-courier`(`~/.local/state/herdr-courier`)이며 `COURIER_STATE_DIR`로 옮길 수
 있습니다. 사용자의 `config.toml`과 데몬의 `journal.jsonl`, `lock`, `endpoint.json`(포트와 접근
-토큰)이 들어 있고, `mailbox.write`를 켜면 `mailbox/<target>.jsonl`과 `mailbox/hook.log`도 생깁니다. `courier send --file`은 `files.inbox`로 다른 폴더를 정하지 않으면 `inbox/`에 복사합니다. 0.1의 상태 폴더(`herdr-console`)는 데몬이 처음 뜰 때 새 이름으로 옮깁니다.
+토큰)이 들어 있고, `mailbox.write`를 켜면 `mailbox/<target>.jsonl`과 `mailbox/hook.log`도 생깁니다. `courier send --file`은 `files.inbox`로 다른 폴더를 정하지 않으면 `inbox/`에 복사합니다. `courier route`를 쓰면 데몬이 뜰 때 읽는 `routes.json`과 감사 기록 `routes.log`가 생깁니다. 0.1의 상태 폴더(`herdr-console`)는 데몬이 처음 뜰 때 새 이름으로 옮깁니다.
 
 ### 설정
 

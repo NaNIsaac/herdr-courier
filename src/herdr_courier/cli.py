@@ -380,27 +380,42 @@ def cmd_agents(args: argparse.Namespace) -> int:
 
 
 def cmd_route(args: argparse.Namespace) -> int:
-    root = state_dir()
-    try:
-        table = routes.load(root)
-        if args.clear:
-            if args.name is None or args.to is not None:
-                print("courier: courier route NAME --clear", file=sys.stderr)
-                return EXIT_FAILED
-            if table.pop(args.name, None) is None:
-                print(f"no route for {args.name}")
-                return 0
-            routes.save(root, table)
-            print(f"{args.name}: route cleared")
-            return 0
-        if args.to is not None:
-            table = routes.with_route(table, args.name, args.to)
-            routes.save(root, table)
-        elif args.name is not None:
-            table = {k: v for k, v in table.items() if k == args.name}
-    except (routes.RouteError, OSError) as exc:
-        print(f"courier: {exc}", file=sys.stderr)
+    """Changes go through courier serve, which checks who asks; a list works without it."""
+    if args.clear and (args.name is None or args.to is not None):
+        print("courier: courier route NAME --clear", file=sys.stderr)
         return EXIT_FAILED
+    banner = ""
+    if args.clear or args.to is not None:
+        body = on_server(
+            {
+                "name": args.name,
+                "to": None if args.clear else args.to,
+                "sender_pane": os.environ.get("HERDR_PANE_ID", ""),
+            }
+        )
+        before = call("GET", "status")["status"].get("routes") or {}
+        table = call("POST", "route", body)["routes"]
+        if args.clear:
+            print(
+                f"{args.name}: route cleared"
+                if args.name in before
+                else f"no route for {args.name}"
+            )
+            return 0
+    else:
+        try:
+            table = request("GET", "status")["status"].get("routes") or {}
+        except Unavailable:
+            try:
+                table = routes.load(state_dir())
+            except (routes.RouteError, OSError) as exc:
+                print(f"courier: {exc}", file=sys.stderr)
+                return EXIT_FAILED
+            banner = "courier serve is not running; routes read from its file"
+        except (LostContact, Refused) as exc:
+            fail(exc, None)
+    if args.name is not None:
+        table = {k: v for k, v in table.items() if k == args.name}
     try:
         listed = CliHerdr().agent_list()
     except HerdrError as exc:
@@ -412,6 +427,8 @@ def cmd_route(args: argparse.Namespace) -> int:
             if a.get("name") and (a.get("agent_session") or {}).get("value")
         }
         notes = routes.unmet(table, running)
+    if banner:
+        notes.insert(0, banner)
     if args.json:
         print(json.dumps({"routes": table, "warnings": notes}, ensure_ascii=False, indent=2))
         return 0
@@ -769,7 +786,8 @@ def main(argv: list[str] | None = None) -> int:
         "route",
         help="send messages for one agent name to another, as to a deputy",
         description="With no arguments, list the routes. A route applies to courier send, also to "
-        "messages already queued; hold, release and status still name the pane itself.",
+        "messages already queued; hold, release and status still name the pane itself. Only "
+        "boss, secretary or a terminal outside herdr may change a route.",
     )
     p.add_argument("name", nargs="?", help="agent name the senders use")
     p.add_argument("to", nargs="?", help="agent name that gets its messages")

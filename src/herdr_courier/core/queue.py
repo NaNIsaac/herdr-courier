@@ -13,12 +13,12 @@ import time
 import uuid
 from collections.abc import Callable, Iterable
 from copy import deepcopy
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from .. import ledger, mailbox, probes
+from .. import ledger, mailbox, probes, routes
 from .gate import Observation, check
 from .inputline import InputLine, LineState, classify, holds, matches
 from .transport import Herdr, HerdrError, same_socket
@@ -39,6 +39,8 @@ SUMMARY_EVERY = 15 * 60.0
 # long outage does not bury it in a backlog.
 RELEASE_AT_ONCE = 10
 LOOKUP_EVERY = 5.0
+# Starts the reason of a message whose route was not taken, so courier send can warn about it.
+ROUTE_MISSED = "not routed: "
 
 
 class State(StrEnum):
@@ -77,6 +79,8 @@ class Item:
     # Wall time after which a held item fails. An item held for a missing agent has no pane
     # (pane_id "") until the agent is back.
     held_until: float | None = None
+    # The name the sender used when a route sent the item to ``target`` instead.
+    routed_from: str | None = None
 
 
 @dataclass
@@ -146,6 +150,7 @@ class Dispatcher:
         wall=time.time,
         controller: str = "boss",
         secretary: str = "secretary",
+        routes_in: Path | None = None,
     ) -> None:
         """``settle_for`` maps an agent name to its between-turns settle time, or None (gate).
 
@@ -155,7 +160,14 @@ class Dispatcher:
         A message for an agent in ``hold_missing`` that herdr does not know, or that lost its
         session, is held for ``hold_ttl`` seconds instead of failing, and the agent named for it
         in ``summary_to`` is told how many are held. ``wall`` is the clock of those deadlines,
-        which survive a restart."""
+        which survive a restart.
+
+        ``routes_in`` is the state directory whose ``routes.json`` keeps the routes of
+        ``set_route`` (``courier route``) across a restart; it is read only at the start, so a
+        route changes only through a request this process can check. A route is taken when a
+        message is queued, and again for every undelivered message when it changes; a message
+        whose route target is missing or gone goes to the name it was sent to, so turning a
+        route on or off never drops one."""
         self.herdr = herdr
         self.journal = journal
         self.clock = clock
@@ -181,6 +193,11 @@ class Dispatcher:
         self.tasks: dict[str, dict] = {}
         self.ledger_notices: dict[str, dict] = {}
         self._last_compact_size = 0
+        self.routes_in = routes_in
+        self.routes: dict[str, str] = {}
+        self._routes_changed = False
+        self._fallback: set[str] = set()
+        self._load_routes()
         self._replay()
         self._pending_tasks()
         if server:
@@ -207,14 +224,23 @@ class Dispatcher:
             return known
         if item_id is not None and item_id in self.items:
             raise DispatchError(f"id {item_id} is in use")
-        try:
-            agent = self.herdr.agent_get(target)
-        except HerdrError as exc:
-            if hold and target in self.hold_missing and exc.code in TARGET_GONE:
-                return self._enqueue_held(
-                    target, text, source, human, client_id, task=task, item_id=item_id
-                )
-            raise DispatchError(f"cannot resolve target {target!r}: {exc}") from exc
+        asked, note = target, ""
+        if (routed := self._route(target)) != target:
+            if (agent := self._live(routed)) is not None:
+                target = routed
+            else:
+                note = f"{ROUTE_MISSED}{asked} → {routed}, but {routed} is not running"
+                self.log(f"courier: {note}; queued for {asked}")
+        if target == asked:
+            try:
+                agent = self.herdr.agent_get(target)
+            except HerdrError as exc:
+                if hold and target in self.hold_missing and exc.code in TARGET_GONE:
+                    held = self._enqueue_held(
+                        target, text, source, human, client_id, task=task, item_id=item_id
+                    )
+                    return replace(held, reason=f"{note}; {held.reason}") if note else held
+                raise DispatchError(f"cannot resolve target {target!r}: {exc}") from exc
         session = (agent.get("agent_session") or {}).get("value")
         if target in self.hold_missing:
             with self.lock:
@@ -228,8 +254,10 @@ class Dispatcher:
             source=source,
             human=human,
             created=time.time(),
+            reason=note,
             client_id=client_id,
             terminal=agent.get("terminal_id"),
+            routed_from=asked if target != asked else None,
         )
         with self.lock:
             # A retried request may have raced the first one while the target was resolved.
@@ -241,17 +269,32 @@ class Dispatcher:
             self.items[item.id] = item
             if task is not None:
                 self.tasks[task["key"]] = task
-            queue = self.queues.setdefault(item.pane_id, [])
-            if human:
-                # Human messages go ahead of queued agent traffic but behind an in-flight one.
-                pos = sum(
-                    1 for i in queue if self.items[i].human or self.items[i].state in IN_FLIGHT
-                )
-                queue.insert(pos, item.id)
-            else:
-                queue.append(item.id)
+            self._push(item)
             self.lock.notify_all()
         return item
+
+    def _push(self, item: Item, *, in_order: bool = False) -> None:
+        """Queue ``item`` on its pane; ``in_order`` places a moved item among the waiting ones
+        by the time it was sent, never ahead of one in flight or of a human message."""
+        queue = self.queues.setdefault(item.pane_id, [])
+        if in_order:
+            pos = next(
+                (
+                    n
+                    for n, i in enumerate(queue)
+                    if self.items[i].state not in IN_FLIGHT
+                    and (item.human or not self.items[i].human)
+                    and self.items[i].created > item.created
+                ),
+                len(queue),
+            )
+            queue.insert(pos, item.id)
+        elif item.human:
+            # Human messages go ahead of queued agent traffic but behind an in-flight one.
+            pos = sum(1 for i in queue if self.items[i].human or self.items[i].state in IN_FLIGHT)
+            queue.insert(pos, item.id)
+        else:
+            queue.append(item.id)
 
     def send_task(
         self,
@@ -347,7 +390,9 @@ class Dispatcher:
             sender = self.herdr.agent_get(sender_pane)
         except HerdrError as exc:
             raise DispatchError("cannot identify sender pane") from exc
-        if sender.get("pane_id") != sender_pane or sender.get("name") != self.controller:
+        # A deputy the controller's name is routed to acts for it.
+        controllers = {self.controller, self._route(self.controller)}
+        if sender.get("pane_id") != sender_pane or sender.get("name") not in controllers:
             raise DispatchError("reassign requires controller pane identity")
 
     def cancel_task(self, key: str, *, sender_pane: str) -> dict:
@@ -728,7 +773,7 @@ class Dispatcher:
                 missing.items, missing.expired = old.items, old.expired
         return missing
 
-    def _hold_by_name(self, item: Item) -> None:
+    def _hold_by_name(self, item: Item, **changed: Any) -> None:
         """Take a queued item off its pane and hold it until its agent is back (lock held)."""
         queue = self.queues.get(item.pane_id, [])
         if item.id in queue:
@@ -741,7 +786,12 @@ class Dispatcher:
             missing.items.append(item.id)
             missing.items.sort(key=lambda i: self.items[i].created)
         self._set(
-            item, State.WAITING, missing.reason(item.target), pane_id="", held_until=item.held_until
+            item,
+            State.WAITING,
+            missing.reason(item.target),
+            pane_id="",
+            held_until=item.held_until,
+            **changed,
         )
 
     def _refused(self, item: Item, verdict) -> bool:
@@ -753,6 +803,9 @@ class Dispatcher:
         """
         if not (verdict.fatal or verdict.lost):
             return False
+        if item.routed_from:
+            self._route_back(item, f"{item.target}: {verdict.reason}")
+            return True
         if item.target in self.hold_missing:
             self._hold_by_name(item)
         elif verdict.fatal:
@@ -852,7 +905,12 @@ class Dispatcher:
                 for name, m in self.missing.items()
                 if pane is None and m.items
             }
-            return {"panes": panes, "held": held, "recent": [asdict(i) for i in finished]}
+            return {
+                "panes": panes,
+                "held": held,
+                "recent": [asdict(i) for i in finished],
+                "routes": dict(self.routes),
+            }
 
     def tick(self) -> None:
         if self.tasks or self.ledger_notices:
@@ -867,6 +925,7 @@ class Dispatcher:
                 if hold.until is not None and hold.until <= now:
                     self._journal({"event": "hold_expired", "pane_id": pane_id})
                     del self.holds[pane_id]
+        self._apply_routes()
         if self.missing:
             self._look_for_missing()
         with self.lock:
@@ -1151,6 +1210,9 @@ class Dispatcher:
                     if self.clock() >= item.verify_until:
                         self._finish(item, State.SENT, f"unconfirmed: cannot observe: {exc}")
                     return None
+                if exc.code in TARGET_GONE and item.routed_from:
+                    self._route_back(item, f"{item.target} is gone")
+                    return None
                 if exc.code in TARGET_GONE and item.target in self.hold_missing:
                     self._hold_by_name(item)
                     return None
@@ -1203,13 +1265,174 @@ class Dispatcher:
         return hold.reason
 
     def resolve(self, target: str) -> str:
-        """Pane id for an agent name or pane id."""
-        if target.count(":") == 1 and target.split(":")[1].startswith("p"):
+        """Pane id for an agent name or pane id. Routes do not apply: a hold names its pane."""
+        if routes.is_pane_id(target):
             return target
         try:
             return self.herdr.agent_get(target)["pane_id"]
         except HerdrError as exc:
             raise DispatchError(f"cannot resolve target {target!r}: {exc}") from exc
+
+    def _load_routes(self) -> None:
+        """The routes saved by the last run; a file that cannot be used routes nothing."""
+        if self.routes_in is None:
+            return
+        try:
+            self.routes = routes.load(self.routes_in)
+        except (routes.RouteError, OSError) as exc:
+            self.log(f"courier: no routes: {exc}")
+            return
+        if self.routes:
+            self._routes_changed = True
+            self.log(f"courier: routes: {', '.join(routes.describe(self.routes))}")
+
+    def _route_changer(self, sender_pane: str) -> str:
+        """Who asks for a route change, refused unless it is the controller or the secretary in
+        their own pane, a herdr pane that herdr says runs no agent (a person's shell), or a
+        terminal outside herdr; a lane must not take another's messages."""
+        if not sender_pane:
+            return "a terminal outside herdr"
+        try:
+            agents = self.herdr.agent_list()
+            panes = self.herdr.pane_list()
+        except HerdrError as exc:
+            raise DispatchError("cannot identify sender pane") from exc
+        sender = next((a for a in agents if a.get("pane_id") == sender_pane), None)
+        if sender is None:
+            if any(p.get("pane_id") == sender_pane for p in panes):
+                return f"a shell pane ({sender_pane})"
+            raise DispatchError("cannot identify sender pane")
+        name = sender.get("name")
+        if name not in {self.controller, self.secretary}:
+            raise DispatchError(
+                f"route changes need {self.controller}, {self.secretary}, a shell pane or a "
+                f"terminal outside herdr, not {name or 'an unnamed agent'} ({sender_pane})"
+            )
+        return f"{name} ({sender_pane})"
+
+    def set_route(self, name: str, to: str | None, *, sender_pane: str) -> dict[str, str]:
+        """Route ``name`` to ``to``, or clear its route when ``to`` is None; returns all routes.
+
+        Saved for the next run and written to the audit log ``routes.log``. A message not yet
+        delivered follows the change on the next tick."""
+        who = self._route_changer(sender_pane)
+        with self.lock:
+            if to is None:
+                if name not in self.routes:
+                    return dict(self.routes)
+                table = {k: v for k, v in self.routes.items() if k != name}
+                what = f"{name} route cleared"
+            else:
+                try:
+                    table = routes.with_route(self.routes, name, to)
+                except routes.RouteError as exc:
+                    raise DispatchError(str(exc)) from exc
+                what = f"{name} → {to}"
+            if self.routes_in is not None:
+                try:
+                    routes.save(self.routes_in, table)
+                    routes.audit(self.routes_in, f"{what} by {who}")
+                except OSError as exc:
+                    raise DispatchError(f"route not changed: {exc}") from exc
+            self.routes = table
+            self._routes_changed = True
+            self.log(f"courier: {what} by {who}")
+            return dict(table)
+
+    def _route(self, name: str) -> str:
+        with self.lock:
+            table = self.routes
+        try:
+            return routes.resolve(table, name)
+        except routes.RouteError as exc:
+            self.log(f"courier: {exc}; {name} not routed")
+            return name
+
+    def _live(self, name: str) -> dict | None:
+        """The agent named ``name`` if herdr knows it with a session, as a route target must be."""
+        try:
+            agent = self.herdr.agent_get(name)
+        except HerdrError:
+            return None
+        return agent if (agent.get("agent_session") or {}).get("value") else None
+
+    def _apply_routes(self) -> None:
+        """Send every undelivered message where its name is routed now, and routed messages whose
+        target went away back to the name they were sent to."""
+        with self.lock:
+            changed, self._routes_changed = self._routes_changed, False
+            fallback, self._fallback = self._fallback, set()
+            if not (changed or fallback):
+                return
+            waiting = sorted(
+                (i for i in self.items.values() if i.state not in FINAL | IN_FLIGHT),
+                key=lambda i: i.created,
+            )
+        for item in waiting:
+            asked = item.routed_from or item.target
+            if item.id in fallback:
+                want = asked
+            elif changed:
+                want = self._route(asked)
+            else:
+                continue
+            if want == item.target:
+                continue
+            agent = self._live(want)
+            with self.lock:
+                if item.state in FINAL | IN_FLIGHT:
+                    continue
+                if agent is not None:
+                    self._move(item, want, agent, asked)
+                elif want == asked and asked in self.hold_missing:
+                    self._unqueue(item)
+                    item.target, item.routed_from = asked, None
+                    item.session, item.terminal = self.seen.get(asked), None
+                    self._hold_by_name(
+                        item, target=asked, routed_from=None, session=item.session, terminal=None
+                    )
+                elif item.id in fallback:
+                    self._finish(
+                        item, State.FAILED, f"{item.target} is gone and {asked} is not running"
+                    )
+                else:
+                    self.log(
+                        f"courier: {ROUTE_MISSED}{asked} → {want}, but {want} is not running; "
+                        f"{item.id} stays with {item.target}"
+                    )
+
+    def _move(self, item: Item, to: str, agent: dict, asked: str) -> None:
+        """Queue ``item`` for the agent ``to`` instead of where it waits now (lock held)."""
+        self._unqueue(item)
+        item.target, item.pane_id = to, agent["pane_id"]
+        item.session = (agent.get("agent_session") or {}).get("value")
+        item.terminal = agent.get("terminal_id")
+        item.routed_from = asked if to != asked else None
+        item.held_until, item.retry_at, item.attempts = None, 0.0, 0
+        self._push(item, in_order=True)
+        self._set(
+            item,
+            State.QUEUED,
+            f"routed: {asked} → {to}" if item.routed_from else f"back to {asked}",
+            target=to,
+            pane_id=item.pane_id,
+            session=item.session,
+            terminal=item.terminal,
+            routed_from=item.routed_from,
+            held_until=None,
+        )
+
+    def _unqueue(self, item: Item) -> None:
+        queue = self.queues.get(item.pane_id, [])
+        if item.id in queue:
+            queue.remove(item.id)
+        if (missing := self.missing.get(item.target)) and item.id in missing.items:
+            missing.items.remove(item.id)
+
+    def _route_back(self, item: Item, why: str) -> None:
+        """A routed item whose target went away goes back to its name on the next tick (lock held)."""
+        self._fallback.add(item.id)
+        self._set(item, State.WAITING, f"{why}; back to {item.routed_from}")
 
     def _stall(self, item: Item, reason: str) -> None:
         """Record a problem without leaving an in-flight state, which would allow a second write."""
@@ -1264,6 +1487,9 @@ class Dispatcher:
         }
         if full:
             entry["item"] = asdict(item)
+            # Left out when unused, so a journal without routes still replays in 0.2.0.
+            if item.routed_from is None:
+                del entry["item"]["routed_from"]
         if item.id in self._enter_retried:
             entry["enter_retried"] = True
         if task is not None:
@@ -1344,7 +1570,14 @@ class Dispatcher:
                     item.reason = entry["reason"]
                     item.attempts = entry["attempts"]
                     item.updated = entry["t"]
-                    for key in ("pane_id", "terminal", "held_until"):
+                    for key in (
+                        "pane_id",
+                        "terminal",
+                        "held_until",
+                        "target",
+                        "session",
+                        "routed_from",
+                    ):
                         if key in entry:
                             setattr(item, key, entry[key])
             if entry.get("event") == "item" and entry.get("enter_retried"):

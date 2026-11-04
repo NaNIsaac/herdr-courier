@@ -113,6 +113,7 @@ def render(
     dispatcher: str,
     wide: bool = False,
     color: bool = False,
+    routes: list[str] | None = None,
 ) -> str:
     """A table that fits a phone terminal; ``wide`` adds the terminal title column.
 
@@ -165,6 +166,7 @@ def render(
 
     out = [
         *wrap(f"dispatcher: {dispatcher}", width, "", "  "),
+        *(fit(f"route: {r}", width).rstrip() for r in routes or []),
         line(" ", "pane", "tab", "agent", "status", "queue", "title", [HEADER_SGR] * 7),
     ]
     for row in rows:

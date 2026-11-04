@@ -341,6 +341,28 @@ red), shows agent names in bold, waiting queues in yellow and shell panes dimmed
 or `--color=never` turns this off; `--color` keeps it when the output is not a terminal, which
 includes a herdr pane on Windows.
 
+### Let a deputy stand in
+
+```sh
+courier route boss boss-deputy
+courier route
+courier route boss --clear
+```
+
+While `boss` is routed to `boss-deputy`, every message sent to `boss` goes to `boss-deputy`, so
+senders keep using one name. A route also moves the messages already queued and not yet typed in,
+and clearing it moves them back. If `boss-deputy` is not running, or its pane closes or starts
+another agent, its messages go to `boss` and `send` prints a warning; nothing is dropped. Routes
+take agent names, never pane ids, and a route that would loop (`a` to `b` to `a`) is refused.
+`hold`, `release` and `status TARGET` still name the pane itself, and while routed the deputy
+may also cancel and reassign tasks as the controller.
+
+Only `boss`, `secretary`, a herdr pane with no agent in it (a shell) or a terminal outside herdr
+may change a route, so one agent cannot take
+another's messages. The change goes through the daemon, which keeps the routes in `routes.json`
+and adds a line to `routes.log` saying who changed what and when. `courier status` and
+`courier agents` list the routes, and warn when no pane runs a route's target.
+
 ### Check that everything is alive
 
 ```sh
@@ -365,6 +387,7 @@ check fails. `status` shows every queue and hold and what the daemon last saw in
 | `courier hold TARGET [--ttl SECONDS] [--reason TEXT] [--owner NAME]` | stop the daemon from typing into a pane |
 | `courier release TARGET` | drop a hold |
 | `courier cancel ID` | drop a queued message |
+| `courier route [NAME [TO]] [--clear] [--json]` | list routes, send messages for NAME to TO, or drop the route of NAME |
 | `courier agents [--wide] [--json] [--width N] [--color[=WHEN]]` | panes with tab, agent, status and queue |
 | `courier panes [--json] [--width N]` | panes by tab with label and working directory |
 | `courier doctor [--json] [--width N]` | read-only health check |
@@ -399,7 +422,8 @@ The state directory is `%LOCALAPPDATA%\herdr-courier` on Windows and
 moves it. It holds your `config.toml` and the daemon's `journal.jsonl`, `lock` and
 `endpoint.json` (port and access token), and with `mailbox.write` on, `mailbox/<target>.jsonl`
 and `mailbox/hook.log`, and `inbox/` for `courier send --file` unless `files.inbox` names
-another folder. The daemon moves a 0.1 state directory (`herdr-console`)
+another folder. `courier route` adds `routes.json`, read when the daemon starts, and the audit
+log `routes.log`. The daemon moves a 0.1 state directory (`herdr-console`)
 to the new name on its first start.
 
 ### Configuration

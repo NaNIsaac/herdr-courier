@@ -238,6 +238,7 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
         "await/cancel",
         "await/close",
         "await/flag",
+        "route",
     ):
         _check_server(d, body)
     match method, path:
@@ -341,6 +342,11 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
         case "POST", "release":
             target = _text(body, "target", 1, 64)
             return {"pane_id": run(lambda: d.release(target))}
+        case "POST", "route":
+            name = _text(body, "name", 1, 64)
+            to = None if body.get("to") is None else _text(body, "to", 1, 64)
+            sender_pane = _text(body, "sender_pane", 0, 64, "")
+            return {"routes": run(lambda: d.set_route(name, to, sender_pane=sender_pane))}
         case "POST", "cancel":
             item_id = _text(body, "id", 1, 32)
             return {"item": asdict(run(lambda: d.cancel(item_id)))}
@@ -500,6 +506,7 @@ def serve(args: argparse.Namespace) -> int:
             summary_every=config.hold.summary_every,
             controller=config.ledger.controller,
             secretary=config.ledger.secretary,
+            routes_in=root,
         )
     except (HerdrError, WrongServer) as exc:
         lock.release()

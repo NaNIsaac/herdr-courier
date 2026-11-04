@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `courier route NAME TO` sends every message for agent NAME to agent TO, as when a deputy
+  stands in for boss; `courier route NAME --clear` drops it and `courier route` lists the routes.
+  Queued messages not yet typed in follow a change. A target that is not running, closes or
+  starts another agent sends its messages back to NAME. Loops and pane ids are refused. Only
+  the controller, the secretary, a herdr pane with no agent or a terminal outside herdr may
+  change a route; the daemon
+  keeps `routes.json` and writes each change to `routes.log`. `status` and `agents` show the
+  routes, and the deputy passes the controller check while routed.
+
 - `courier send --file PATH` (repeatable) copies files into this PC's inbox folder,
   `<inbox>/YYYYMMDD-HHMMSS-<message id>/`, and adds one line per file naming the copy, with its
   origin, size and SHA-256 prefix as information. `MACHINE:PATH` fetches with scp. At most 10

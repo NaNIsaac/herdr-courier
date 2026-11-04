@@ -20,8 +20,21 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, NoReturn
 
-from . import agents, attach, config, daemon, display, doctor, ledger, mailbox, panes, verifier
+from . import (
+    agents,
+    attach,
+    config,
+    daemon,
+    display,
+    doctor,
+    ledger,
+    mailbox,
+    panes,
+    routes,
+    verifier,
+)
 from .client import LostContact, Refused, Unavailable, request
+from .core.queue import ROUTE_MISSED
 from .core.transport import CliHerdr, HerdrError
 from .state import state_dir
 
@@ -150,6 +163,9 @@ def cmd_send(args: argparse.Namespace) -> int:
         # The hand-delivery hint must not name copies that were just removed.
         fail(exc, body | {"text": args.text} if folder and not retried else body)
     item = reply["item"]
+    if item.get("reason", "").startswith(ROUTE_MISSED):
+        print(f"courier: warning: {item['reason']}", file=sys.stderr)
+    via = f", routed from {item['routed_from']}" if item.get("routed_from") else ""
     if folder:
         if "attachments" not in reply:
             print(
@@ -164,7 +180,7 @@ def cmd_send(args: argparse.Namespace) -> int:
             folder = None
     if not args.wait:
         if item["pane_id"]:
-            print(f"queued {item['id']} for {item['target']} ({item['pane_id']})")
+            print(f"queued {item['id']} for {item['target']} ({item['pane_id']}){via}")
         else:
             print(f"held {item['id']} for {item['target']}: {item['reason']}")
         if folder:
@@ -216,6 +232,8 @@ def render_status(reply: dict[str, Any], *, width: int, recent: int, now: float)
             "",
             "  ",
         )
+    for line in routes.describe(status.get("routes") or {}):
+        out.append(f"route {line}")
     panes = status["panes"]
     held = status.get("held") or {}
     if not held and not any(v["pending"] or v["hold"] for v in panes.values()):
@@ -321,11 +339,25 @@ def cmd_agents(args: argparse.Namespace) -> int:
     except HerdrError as exc:
         print(f"courier: herdr did not answer ({exc})", file=sys.stderr)
         return EXIT_FAILED
-    notes = agents.warnings(rows)
+    try:
+        table = (
+            dispatch["routes"] if dispatch and "routes" in dispatch else routes.load(state_dir())
+        )
+    except routes.RouteError as exc:
+        table, notes = {}, [str(exc)]
+    else:
+        notes = []
+    running = {r.agent for r in rows if r.agent and r.status != agents.NO_AGENT}
+    notes += routes.unmet(table, running) + agents.warnings(rows)
     if args.json:
         print(
             json.dumps(
-                {"dispatcher": summary, "rows": [r.as_dict() for r in rows], "warnings": notes},
+                {
+                    "dispatcher": summary,
+                    "routes": table,
+                    "rows": [r.as_dict() for r in rows],
+                    "warnings": notes,
+                },
                 ensure_ascii=False,
                 indent=2,
             )
@@ -333,7 +365,79 @@ def cmd_agents(args: argparse.Namespace) -> int:
         return 0
     width = args.width or display.terminal_width()
     color = display.color_wanted(args.color, sys.stdout)
-    print(agents.render(rows, notes, width=width, dispatcher=summary, wide=args.wide, color=color))
+    print(
+        agents.render(
+            rows,
+            notes,
+            width=width,
+            dispatcher=summary,
+            wide=args.wide,
+            color=color,
+            routes=routes.describe(table),
+        )
+    )
+    return 0
+
+
+def cmd_route(args: argparse.Namespace) -> int:
+    """Changes go through courier serve, which checks who asks; a list works without it."""
+    if args.clear and (args.name is None or args.to is not None):
+        print("courier: courier route NAME --clear", file=sys.stderr)
+        return EXIT_FAILED
+    banner = ""
+    if args.clear or args.to is not None:
+        body = on_server(
+            {
+                "name": args.name,
+                "to": None if args.clear else args.to,
+                "sender_pane": os.environ.get("HERDR_PANE_ID", ""),
+            }
+        )
+        before = call("GET", "status")["status"].get("routes") or {}
+        table = call("POST", "route", body)["routes"]
+        if args.clear:
+            print(
+                f"{args.name}: route cleared"
+                if args.name in before
+                else f"no route for {args.name}"
+            )
+            return 0
+    else:
+        try:
+            table = request("GET", "status")["status"].get("routes") or {}
+        except Unavailable:
+            try:
+                table = routes.load(state_dir())
+            except (routes.RouteError, OSError) as exc:
+                print(f"courier: {exc}", file=sys.stderr)
+                return EXIT_FAILED
+            banner = "courier serve is not running; routes read from its file"
+        except (LostContact, Refused) as exc:
+            fail(exc, None)
+    if args.name is not None:
+        table = {k: v for k, v in table.items() if k == args.name}
+    try:
+        listed = CliHerdr().agent_list()
+    except HerdrError as exc:
+        notes = [f"herdr did not answer ({exc}); route targets not checked"]
+    else:
+        running = {
+            a["name"]
+            for a in listed
+            if a.get("name") and (a.get("agent_session") or {}).get("value")
+        }
+        notes = routes.unmet(table, running)
+    if banner:
+        notes.insert(0, banner)
+    if args.json:
+        print(json.dumps({"routes": table, "warnings": notes}, ensure_ascii=False, indent=2))
+        return 0
+    if not table:
+        print("no routes" if args.name is None else f"no route for {args.name}")
+    for line in routes.describe(table):
+        print(line)
+    for note in notes:
+        print(f"courier: warning: {note}", file=sys.stderr)
     return 0
 
 
@@ -677,6 +781,19 @@ def main(argv: list[str] | None = None) -> int:
         help="read a Claude Code hook payload on stdin and answer with open messages",
     )
     p.set_defaults(func=cmd_inbox)
+
+    p = sub.add_parser(
+        "route",
+        help="send messages for one agent name to another, as to a deputy",
+        description="With no arguments, list the routes. A route applies to courier send, also to "
+        "messages already queued; hold, release and status still name the pane itself. Only "
+        "boss, secretary, a herdr pane with no agent or a terminal outside herdr may change a route.",
+    )
+    p.add_argument("name", nargs="?", help="agent name the senders use")
+    p.add_argument("to", nargs="?", help="agent name that gets its messages")
+    p.add_argument("--clear", action="store_true", help="drop the route of NAME")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_route)
 
     p = sub.add_parser("cancel", help="drop a queued message")
     p.add_argument("id")

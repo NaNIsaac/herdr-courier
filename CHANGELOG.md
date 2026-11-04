@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `install.ps1` and `install.sh`: one line installs courier on a machine with nothing on it. They
+  install uv if it is missing, then install the main branch from its source archive, so git is
+  not needed either.
+
 - `courier route NAME TO` sends every message for agent NAME to agent TO, as when a deputy
   stands in for boss; `courier route NAME --clear` drops it and `courier route` lists the routes.
   Queued messages not yet typed in follow a change. A target that is not running, closes or

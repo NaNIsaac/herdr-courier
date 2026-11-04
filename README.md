@@ -40,8 +40,25 @@ The commands are a **workflow illustration**, not captured terminal output. A pa
 
 ## Install
 
-courier needs [uv](https://docs.astral.sh/uv/) and the `herdr` CLI on `PATH`. It is tested on
-Windows and Linux with Python 3.13, which uv fetches if needed.
+One line, nothing needed beforehand: the script installs [uv](https://docs.astral.sh/uv/) if it is
+missing, and uv fetches a Python. Windows (cmd or PowerShell):
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm -useb https://raw.githubusercontent.com/NaNIsaac/herdr-courier/main/install.ps1 | iex"
+```
+
+macOS and Linux:
+
+```sh
+curl -LsSf https://raw.githubusercontent.com/NaNIsaac/herdr-courier/main/install.sh | sh
+```
+
+It runs `uv tool install herdr-courier` and puts uv's command folder on `PATH` for new terminals.
+The package is the main branch as a source archive, so git is not needed.
+Run the same line again to update.
+
+courier needs the `herdr` CLI on `PATH`. It is tested on
+Windows and Linux with Python 3.13, which uv fetches if needed. By hand, with uv:
 
 <!-- test -->
 ```sh

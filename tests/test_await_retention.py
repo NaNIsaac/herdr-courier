@@ -1,12 +1,13 @@
 import io
 import json
+from dataclasses import fields
 
 import pytest
 from conftest import call
 
 from herdr_courier import cli, ledger, mailbox
 from herdr_courier.client import Refused, request
-from herdr_courier.core.queue import Dispatcher, DispatchError, LedgerCapacity, State
+from herdr_courier.core.queue import Dispatcher, DispatchError, Item, LedgerCapacity, State
 
 
 @pytest.fixture
@@ -280,6 +281,12 @@ def test_override_outbox_survives_mailbox_failure(small, herdr, monkeypatch):
     restored.tick()
     assert restored.tasks["BL-1"]["secretary_notified"]
     assert any("recovery" in m.text for m in mailbox.load(small.journal.parent, "secretary"))
+
+
+def test_item_serialization_includes_every_field(herdr, make_dispatcher):
+    herdr.add("w1", "w1")
+    item = make_dispatcher().enqueue("w1", "hello", source="sender")
+    assert set(item.as_dict()) == {field.name for field in fields(Item)}
 
 
 def test_nonawait_item_and_journal_match_original_schema(herdr, make_dispatcher, monkeypatch):

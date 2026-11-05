@@ -58,29 +58,63 @@ FINAL = frozenset({State.SENT, State.FAILED, State.CANCELLED})
 IN_FLIGHT = frozenset({State.SUBMITTING, State.VERIFYING})
 
 
-@dataclass
-class Item:
+@dataclass(kw_only=True)
+class Message:
     id: str
     target: str
-    pane_id: str
-    session: str | None
     text: str
     source: str
     human: bool
     created: float
+    client_id: str | None = None
+
+
+@dataclass(kw_only=True)
+class Delivery:
+    pane_id: str
+    session: str | None
     state: State = State.QUEUED
     reason: str = ""
     attempts: int = 0
     updated: float = 0.0
     retry_at: float = 0.0
     verify_until: float = 0.0
-    client_id: str | None = None
     terminal: str | None = None
     # Wall time after which a held item fails. An item held for a missing agent has no pane
     # (pane_id "") until the agent is back.
     held_until: float | None = None
     # The name the sender used when a route sent the item to ``target`` instead.
     routed_from: str | None = None
+
+
+@dataclass
+class Item(Message, Delivery):
+    def as_dict(self) -> dict:
+        # Journal and API field order predates the message/delivery split.
+        values = asdict(self)
+        return {
+            key: values[key]
+            for key in (
+                "id",
+                "target",
+                "pane_id",
+                "session",
+                "text",
+                "source",
+                "human",
+                "created",
+                "state",
+                "reason",
+                "attempts",
+                "updated",
+                "retry_at",
+                "verify_until",
+                "client_id",
+                "terminal",
+                "held_until",
+                "routed_from",
+            )
+        }
 
 
 @dataclass
@@ -875,7 +909,7 @@ class Dispatcher:
             wanted = sorted(set(self.queues) | set(self.holds)) if pane is None else [pane]
             for pane_id in wanted:
                 hold = self.holds.get(pane_id)
-                pending = [asdict(self.items[i]) for i in self.queues.get(pane_id, [])]
+                pending = [self.items[i].as_dict() for i in self.queues.get(pane_id, [])]
                 panes[pane_id] = {
                     "pending": pending,
                     "hold": None
@@ -900,7 +934,7 @@ class Dispatcher:
                 name: {
                     "since": m.since,
                     "back": m.back,
-                    "pending": [asdict(self.items[i]) for i in m.items],
+                    "pending": [self.items[i].as_dict() for i in m.items],
                 }
                 for name, m in self.missing.items()
                 if pane is None and m.items
@@ -908,7 +942,7 @@ class Dispatcher:
             return {
                 "panes": panes,
                 "held": held,
-                "recent": [asdict(i) for i in finished],
+                "recent": [i.as_dict() for i in finished],
                 "routes": dict(self.routes),
             }
 
@@ -1486,7 +1520,7 @@ class Dispatcher:
             "attempts": item.attempts,
         }
         if full:
-            entry["item"] = asdict(item)
+            entry["item"] = item.as_dict()
             # Left out when unused, so a journal without routes still replays in 0.2.0.
             if item.routed_from is None:
                 del entry["item"]["routed_from"]

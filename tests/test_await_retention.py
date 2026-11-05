@@ -1,13 +1,13 @@
 import io
 import json
-from dataclasses import asdict
+from dataclasses import fields
 
 import pytest
 from conftest import call
 
 from herdr_courier import cli, ledger, mailbox
 from herdr_courier.client import Refused, request
-from herdr_courier.core.queue import Dispatcher, DispatchError, LedgerCapacity, State
+from herdr_courier.core.queue import Dispatcher, DispatchError, Item, LedgerCapacity, State
 
 
 @pytest.fixture
@@ -283,6 +283,12 @@ def test_override_outbox_survives_mailbox_failure(small, herdr, monkeypatch):
     assert any("recovery" in m.text for m in mailbox.load(small.journal.parent, "secretary"))
 
 
+def test_item_serialization_includes_every_field(herdr, make_dispatcher):
+    herdr.add("w1", "w1")
+    item = make_dispatcher().enqueue("w1", "hello", source="sender")
+    assert set(item.as_dict()) == {field.name for field in fields(Item)}
+
+
 def test_nonawait_item_and_journal_match_original_schema(herdr, make_dispatcher, monkeypatch):
     herdr.add("w1", "w1")
     d = make_dispatcher()
@@ -308,7 +314,7 @@ def test_nonawait_item_and_journal_match_original_schema(herdr, make_dispatcher,
         "held_until": None,
     }
     # A reply names the route field; the journal leaves it out while it is unused.
-    assert json.dumps(asdict(item)) == json.dumps(expected | {"routed_from": None})
+    assert json.dumps(item.as_dict()) == json.dumps(expected | {"routed_from": None})
     entry = {
         "event": "item",
         "id": item.id,

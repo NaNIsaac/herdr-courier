@@ -19,7 +19,6 @@ import threading
 import time
 import traceback
 from collections.abc import Callable
-from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -280,7 +279,7 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
                     # The mailbox is a second copy; the queued item is delivered either way.
                     print(f"courier serve: mailbox copy of {item.id} not written: {exc}")
             # Tells the client this server took its id, so a different id means another item.
-            return {"item": asdict(item), "server": d.server, "attachments": len(attachments)}
+            return {"item": item.as_dict(), "server": d.server, "attachments": len(attachments)}
         case "GET", "await/list":
             with d.lock:
                 return {"tasks": [dict(t) for t in d.tasks.values()]}
@@ -324,7 +323,7 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
         case "POST", "wait":
             item_id = _text(body, "id", 1, 32)
             timeout = _number(body, "timeout", 60, 0, 300)
-            return {"item": asdict(run(lambda: d.wait(item_id, timeout)))}
+            return {"item": run(lambda: d.wait(item_id, timeout)).as_dict()}
         case "GET", "status":
             target = query.get("target", [None])[0]
             pane = None if target is None else run(lambda: d.resolve(target))
@@ -349,7 +348,7 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
             return {"routes": run(lambda: d.set_route(name, to, sender_pane=sender_pane))}
         case "POST", "cancel":
             item_id = _text(body, "id", 1, 32)
-            return {"item": asdict(run(lambda: d.cancel(item_id)))}
+            return {"item": run(lambda: d.cancel(item_id)).as_dict()}
     raise BadRequest(404, f"no route {method} /api/dispatch/{path}")
 
 

@@ -15,7 +15,10 @@ dim (SGR 2 or muted grey SGR 38;2;154;160;166).
 Codex draws no rules. Its input is a line starting with "›", padded above and below by a blank
 row with a background colour (SGR 48), and its placeholder ("Ask Codex to do anything") is dim.
 The same "›" marks the selected option of a dialog, but there the rows around it are not blank
-padding, so only a flanked line counts as the input line.
+padding, so only a flanked line counts as the input line. Newer Codex builds draw the input
+without a background: the lowest "›" line on the screen, between two plain blank rows, is then
+the input line, one row only. A dialog option has another option or text next to it, and typed
+text over more than one row is UNKNOWN until it is sent or cleared.
 """
 
 import re
@@ -167,11 +170,37 @@ def _classify_codex(lines: list[str], plain: list[str]) -> InputLine:
         if _placeholder(ink):
             return InputLine(LineState.EMPTY, "", f"codex dim placeholder {text[:60]!r}")
         return InputLine(LineState.TYPED, text, f"codex typed {text[:60]!r}")
-    return InputLine(
-        LineState.UNKNOWN,
-        "",
-        f"no input box (no rules, no {CODEX_PROMPT} line between padding rows)",
+    return _classify_plain_codex(lines, plain)
+
+
+def _classify_plain_codex(lines: list[str], plain: list[str]) -> InputLine:
+    at = next(
+        (i for i in range(len(lines) - 1, -1, -1) if plain[i].lstrip().startswith(CODEX_PROMPT)),
+        None,
     )
+    if (
+        at is None
+        or at == 0
+        or plain[at - 1].strip()
+        or (at + 1 < len(lines) and plain[at + 1].strip())
+    ):
+        return InputLine(
+            LineState.UNKNOWN,
+            "",
+            f"no input box (no rules, no {CODEX_PROMPT} line between padding or blank rows)",
+        )
+    first = _styled(lines[at])
+    start = next(i for i, (c, _) in enumerate(first) if c == CODEX_PROMPT) + 1
+    chars = first[start:]
+    text = "".join(c for c, _ in chars).strip()
+    ink = [style for c, style in chars if not c.isspace()]
+    if not ink:
+        return InputLine(LineState.EMPTY, "", "codex prompt line blank (no background)")
+    if _placeholder(ink):
+        return InputLine(
+            LineState.EMPTY, "", f"codex dim placeholder {text[:60]!r} (no background)"
+        )
+    return InputLine(LineState.TYPED, text, f"codex typed {text[:60]!r} (no background)")
 
 
 def classify(screen: str) -> InputLine:

@@ -147,6 +147,40 @@ def test_codex_dialog_option_is_not_the_input_line():
     assert classify(dialog).state is LineState.UNKNOWN
 
 
+# Newer Codex draws the input line on plain blank rows, under scrollback (here a usage-limit banner).
+CODEX_PLAIN = (DATA / "codex_empty_plain.ansi").read_text(encoding="utf-8")
+CODEX_PLAIN_PLACEHOLDER = "\x1b[2mAsk Codex to do anything"
+
+
+def test_codex_plain_placeholder_is_empty():
+    line = classify(CODEX_PLAIN)
+    assert line.state is LineState.EMPTY
+    assert "no background" in line.evidence
+
+
+def test_codex_plain_blank_prompt_is_empty():
+    assert classify(CODEX_PLAIN.replace(CODEX_PLAIN_PLACEHOLDER, "")).state is LineState.EMPTY
+
+
+def test_codex_plain_typed_text_is_typed():
+    line = classify(CODEX_PLAIN.replace(CODEX_PLAIN_PLACEHOLDER, "isaac typing"))
+    assert line.state is LineState.TYPED
+    assert line.text == "isaac typing"
+
+
+def test_codex_plain_two_rows_of_typed_text_are_unknown():
+    two = CODEX_PLAIN.replace(CODEX_PLAIN_PLACEHOLDER, "first row\r\n  second row")
+    assert classify(two).state is LineState.UNKNOWN
+
+
+def test_codex_plain_dialog_options_are_not_the_input_line():
+    for dialog in (
+        "  Allow this command?\r\n\r\n› 1. Yes\r\n  2. No\r\n\r\n  Press enter to confirm\r\n",
+        "  Allow this command?\r\n  1. Yes\r\n› 2. No\r\n\r\n  Press enter to confirm\r\n",
+    ):
+        assert classify(dialog).state is LineState.UNKNOWN, dialog
+
+
 AGY_EMPTY = (Path(__file__).parent.parent / "fixtures" / "agy" / "idle-or-current.ansi").read_text(
     encoding="utf-8"
 )

@@ -42,9 +42,14 @@ class Mailbox:
 
 @dataclass(frozen=True)
 class Ledger:
-    controller: str = "boss"
-    secretary: str = "secretary"
+    controller: str = defaults.LEDGER_CONTROLLER
+    secretary: str = defaults.LEDGER_NOTIFY_TO
     resume_for: tuple[str, ...] = ()
+    notify_to: str = ""
+    notify_on_override: bool = defaults.LEDGER_NOTIFY_ON_OVERRIDE
+    notify_on_capacity: bool = defaults.LEDGER_NOTIFY_ON_CAPACITY
+    check_execution: bool = defaults.LEDGER_CHECK_EXECUTION
+    membership_field: str = defaults.LEDGER_MEMBERSHIP_FIELD
 
 
 @dataclass(frozen=True)
@@ -116,8 +121,14 @@ def _section(path: Path, name: str, cls: type, table: Any):
                 raise ConfigError(f"{path}: {name}.{key} must be a string")
             if key.endswith("separator") and not value:
                 raise ConfigError(f"{path}: {name}.{key} must not be empty")
-            if name == "ledger" and key in {"controller", "secretary"} and not value.strip():
+            if (
+                name == "ledger"
+                and key in {"controller", "secretary", "membership_field"}
+                and not value.strip()
+            ):
                 raise ConfigError(f"{path}: {name}.{key} must not be empty")
+            if name == "ledger" and key == "notify_to" and value and not value.strip():
+                raise ConfigError(f"{path}: {name}.{key} must be empty or a name")
         elif known[key].type is bool:
             if not isinstance(value, bool):
                 raise ConfigError(f"{path}: {name}.{key} must be true or false")

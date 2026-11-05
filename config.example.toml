@@ -44,6 +44,14 @@ readers = []
 [ledger]
 controller = "boss"
 secretary = "secretary"
+# Empty inherits secretary, the existing notice receiver setting.
+notify_to = ""
+notify_on_override = true
+notify_on_capacity = true
+# Require lane_state_task and descendants_working evidence before reassignment.
+check_execution = true
+# Member-name field in the optional COURIER_ROLES_FILE JSON.
+membership_field = "lanes"
 # SessionStart hooks for these agents recover tasks they sent or own, even without mailbox readers.
 resume_for = []
 

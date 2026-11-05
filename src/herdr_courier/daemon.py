@@ -505,6 +505,11 @@ def serve(args: argparse.Namespace) -> int:
             summary_every=config.hold.summary_every,
             controller=config.ledger.controller,
             secretary=config.ledger.secretary,
+            notify_to=config.ledger.notify_to or None,
+            notify_on_override=config.ledger.notify_on_override,
+            notify_on_capacity=config.ledger.notify_on_capacity,
+            check_execution=config.ledger.check_execution,
+            membership_field=config.ledger.membership_field,
             routes_in=root,
         )
     except (HerdrError, WrongServer) as exc:

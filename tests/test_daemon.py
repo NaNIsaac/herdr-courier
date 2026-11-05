@@ -374,6 +374,8 @@ def test_serve_is_a_subcommand_of_courier_and_hc_and_hcd_is_its_alias(capsys):
         "courier": "herdr_courier.cli:main",
         "hc": "herdr_courier.cli:main",
         "hcd": "herdr_courier.cli:serve_main",
+        "pepperpaw": "herdr_courier.human_cli:main",
+        "ppw": "herdr_courier.human_cli:main",
     }
     out = help_text(lambda: cli.main(["serve", "--help"]), capsys)
     assert out.startswith("usage: courier serve")

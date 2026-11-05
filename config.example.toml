@@ -74,3 +74,12 @@ summary_every = 900.0
 # names that copy in the message. "" is the inbox folder in the state directory; ~ and environment
 # variables are expanded. At most 10 files, 25 MB each and 100 MB in all go with one message.
 inbox = ""
+
+[human]
+# Identity and default recipient for pepperpaw/ppw; empty requires explicit setup.
+name = ""
+default_to = ""
+
+[questions]
+# Opt-in provider commands; see docs/questions.md for their JSON protocol.
+adapters = {}

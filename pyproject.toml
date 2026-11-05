@@ -32,6 +32,8 @@ Issues = "https://github.com/NaNIsaac/herdr-courier/issues"
 courier = "herdr_courier.cli:main"
 hc = "herdr_courier.cli:main"
 hcd = "herdr_courier.cli:serve_main"
+pepperpaw = "herdr_courier.human_cli:main"
+ppw = "herdr_courier.human_cli:main"
 
 [build-system]
 requires = ["uv_build>=0.11,<0.13"]

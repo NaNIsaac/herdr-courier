@@ -18,7 +18,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from .. import ledger, mailbox, probes, routes
+from .. import defaults, ledger, mailbox, probes, routes
 from .gate import Observation, check
 from .inputline import InputLine, LineState, classify, holds, matches
 from .transport import Herdr, HerdrError, same_socket
@@ -182,8 +182,13 @@ class Dispatcher:
         summary_to: dict[str, str] | None = None,
         summary_every: float = SUMMARY_EVERY,
         wall=time.time,
-        controller: str = "boss",
-        secretary: str = "secretary",
+        controller: str = defaults.LEDGER_CONTROLLER,
+        secretary: str = defaults.LEDGER_NOTIFY_TO,
+        notify_to: str | None = None,
+        notify_on_override: bool = defaults.LEDGER_NOTIFY_ON_OVERRIDE,
+        notify_on_capacity: bool = defaults.LEDGER_NOTIFY_ON_CAPACITY,
+        check_execution: bool = defaults.LEDGER_CHECK_EXECUTION,
+        membership_field: str = defaults.LEDGER_MEMBERSHIP_FIELD,
         routes_in: Path | None = None,
     ) -> None:
         """``settle_for`` maps an agent name to its between-turns settle time, or None (gate).
@@ -208,6 +213,11 @@ class Dispatcher:
         self.wall = wall
         self.controller = controller
         self.secretary = secretary
+        self._notify_to = notify_to
+        self.notify_on_override = notify_on_override
+        self.notify_on_capacity = notify_on_capacity
+        self.check_execution = check_execution
+        self.membership_field = membership_field
         self.log = log
         self.settle_for = settle_for
         self.server = server
@@ -463,13 +473,18 @@ class Dispatcher:
                     raise DispatchError(f"cannot check old owner: {exc}") from exc
                 agent = {"agent_status": "missing"}
             reasons = []
-            if not {"lane_state_task", "descendants_working"} <= agent.keys():
+            if (
+                self.check_execution
+                and not {"lane_state_task", "descendants_working"} <= agent.keys()
+            ):
                 reasons.append("execution proof unavailable")
-            if agent.get("agent_status") == "working" or agent.get("descendants_working"):
+            if agent.get("agent_status") == "working" or (
+                self.check_execution and agent.get("descendants_working")
+            ):
                 reasons.append(f"{task['to']} working")
             elif agent.get("agent_status") not in {"idle", "missing"}:
                 reasons.append(f"{task['to']} execution state uncertain")
-            if agent.get("lane_state_task") == key:
+            if self.check_execution and agent.get("lane_state_task") == key:
                 reasons.append(f"{task['to']} lane-state still owns {key}")
             try:
                 if ledger.evidence_exists(task):
@@ -500,12 +515,13 @@ class Dispatcher:
             task["attempts"] += 1
             task["reassigned_by"] = sender_pane
             if force:
-                task["override"] = reasons or ["boss --force"]
+                task["override"] = reasons or [f"{self.controller} --force"]
                 task["override_reason"] = reason
-                task["secretary_notice"] = (
-                    f"FORCE reassign {key} to {target} by {sender_pane}: {reason}; "
-                    + "; ".join(reasons)
-                )
+                if self.notify_on_override:
+                    task["secretary_notice"] = (
+                        f"FORCE reassign {key} to {target} by {sender_pane}: {reason}; "
+                        + "; ".join(reasons)
+                    )
             self._task_record(task)
             self._flush_task_notices()
             return dict(task)
@@ -514,6 +530,8 @@ class Dispatcher:
         self._journal({"event": "task", "task": task})
 
     def _capacity_notice(self, name: str, text: str) -> None:
+        if not self.notify_on_capacity:
+            return
         if name not in self.ledger_notices:
             notice = {"name": name, "text": text, "sent": False}
             self.ledger_notices[name] = notice
@@ -622,10 +640,14 @@ class Dispatcher:
                 "LEDGER CAPACITY: 80% retention threshold; review task history before the hard cap",
             )
 
-    def _secretary_notice(self, text: str, client_id: str) -> None:
+    @property
+    def notify_to(self) -> str:
+        return self.secretary if self._notify_to is None else self._notify_to
+
+    def _notify(self, text: str, client_id: str) -> None:
         item = Item(
             id=hashlib.sha256(client_id.encode()).hexdigest()[:10],
-            target=self.secretary,
+            target=self.notify_to,
             pane_id="",
             session=None,
             text=text,
@@ -635,25 +657,25 @@ class Dispatcher:
         )
         if mailbox.add(self.journal.parent, item):
             try:
-                self.enqueue(self.secretary, text, source="courier", client_id=client_id)
+                self.enqueue(self.notify_to, text, source="courier", client_id=client_id)
             except DispatchError as exc:
-                self.log(f"secretary notice kept in mailbox: {exc}")
+                self.log(f"{self.notify_to} notice kept in mailbox: {exc}")
 
     def _flush_task_notices(self) -> None:
         for notice in self.ledger_notices.values():
-            if not notice["sent"]:
+            if not notice["sent"] and self.notify_on_capacity:
                 try:
-                    self._secretary_notice(notice["text"], "ledger:" + notice["name"])
+                    self._notify(notice["text"], "ledger:" + notice["name"])
                 except OSError as exc:
-                    self.log(f"secretary notification pending: {exc}")
+                    self.log(f"{self.notify_to} notification pending: {exc}")
                     continue
                 notice["sent"] = True
                 self._journal({"event": "ledger-notice", **notice})
         for task in self.tasks.values():
-            if text := task.get("secretary_notice"):
+            if (text := task.get("secretary_notice")) and self.notify_on_override:
                 client_id = f"force:{task['key']}:{task['attempts']}"
                 try:
-                    self._secretary_notice(text, client_id)
+                    self._notify(text, client_id)
                 except OSError as exc:
                     self.log(f"override notification pending: {exc}")
                     continue
@@ -718,7 +740,7 @@ class Dispatcher:
     def check_tasks(self) -> None:
         with self.lock:
             now = ledger.time.time()
-            names = ledger.role_names()
+            names = ledger.role_names(self.membership_field)
             for task in self.tasks.values():
                 if task["state"] not in {"OPEN", "VERIFYING"}:
                     continue
@@ -1321,9 +1343,9 @@ class Dispatcher:
             self.log(f"courier: routes: {', '.join(routes.describe(self.routes))}")
 
     def _route_changer(self, sender_pane: str) -> str:
-        """Who asks for a route change, refused unless it is the controller or the secretary in
+        """Who asks for a route change, refused unless it is the controller or notice receiver in
         their own pane, a herdr pane that herdr says runs no agent (a person's shell), or a
-        terminal outside herdr; a lane must not take another's messages."""
+        terminal outside herdr; an agent must not take another's messages."""
         if not sender_pane:
             return "a terminal outside herdr"
         try:
@@ -1337,9 +1359,9 @@ class Dispatcher:
                 return f"a shell pane ({sender_pane})"
             raise DispatchError("cannot identify sender pane")
         name = sender.get("name")
-        if name not in {self.controller, self.secretary}:
+        if name not in {self.controller, self.notify_to}:
             raise DispatchError(
-                f"route changes need {self.controller}, {self.secretary}, a shell pane or a "
+                f"route changes need {self.controller}, {self.notify_to}, a shell pane or a "
                 f"terminal outside herdr, not {name or 'an unnamed agent'} ({sender_pane})"
             )
         return f"{name} ({sender_pane})"

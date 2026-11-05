@@ -1,4 +1,4 @@
-"""Name routes: messages for one agent name go to another, as when a deputy stands in for boss.
+"""Name routes: messages for one agent name go to another, as when a deputy stands in.
 
 courier serve keeps the routes in ``routes.json`` in the state directory, a JSON object from
 name to name, and reads it when it starts. A route changes only through ``courier route``,

@@ -8,6 +8,8 @@ import shlex
 import time
 from pathlib import Path
 
+from . import defaults
+
 ACTIVE = frozenset({"OPEN", "VERIFYING", "BLOCKED"})
 KEY = re.compile(r"(?:BL-\d+|[\w.-]+#\d+|Q\d+)", re.ASCII)
 FIELDS = ("due", "repo", "branch", "cwd", "needs_approval", "approval_ref")
@@ -61,13 +63,13 @@ def new(key: str, source: str, target: str, evidence: list[str], **fields) -> di
     }
 
 
-def role_names() -> set[str] | None:
+def role_names(field: str = defaults.LEDGER_MEMBERSHIP_FIELD) -> set[str] | None:
     path = os.environ.get("COURIER_ROLES_FILE")
     if not path:
         return None
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
-        return set(data["lanes"])
+        return set(data[field])
     except (OSError, ValueError, KeyError, TypeError):
         return None
 

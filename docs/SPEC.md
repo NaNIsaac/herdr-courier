@@ -117,3 +117,23 @@ This is not end-to-end exactly-once delivery. Pre-write retries are allowed, one
 is allowed, and client deduplication lasts only while an item is retained. A sender using a
 new identifier can send the same text again. Receiver-side rejection such as a usage limit
 is not currently a distinct delivery state.
+
+## Setup policy configuration
+
+The state directory's `config.toml` controls setup policy: `ledger.controller` (default
+`boss`), `ledger.notify_to` (empty inherits the existing `ledger.secretary` setting,
+default `secretary`), `ledger.notify_on_override`, `ledger.notify_on_capacity` and
+`ledger.check_execution` (all three default true). The notice receiver also has route-change
+permission. Existing configurations and journal notification fields remain valid.
+Disabling notices prevents the corresponding mailbox and pane notifications; existing pending
+notices remain stored for when notifications are enabled again. An existing pending override
+notice still blocks another reassignment until sent. Disabling the execution check
+removes the requirement for `lane_state_task` and `descendants_working` proof during reassignment;
+the receiver's working status, evidence, identity and in-flight checks still apply.
+
+Other setup choices already live in `panes.*` (label conventions), `doctor.other_writers`
+(competing writers), `ovis.*` (between-turn receivers), `hold.*` (missing receivers and
+summary recipients), and `mailbox.readers`. Optional membership checks use the existing
+`COURIER_ROLES_FILE` environment variable and `ledger.membership_field` (default `lanes`);
+without that environment variable no membership list is assumed.
+An ownership field or input-ownership check is a safety concept, independent of agent names.

@@ -30,7 +30,7 @@ def mailbox_dir(root: Path) -> Path:
 
 
 def path_for(root: Path, target: str) -> Path:
-    """``boss`` → mailbox/boss.jsonl; a pane id such as ``w3:pC`` → mailbox/w3_pc.jsonl."""
+    """``reader`` → mailbox/reader.jsonl; a pane id such as ``w3:pC`` → mailbox/w3_pc.jsonl."""
     return mailbox_dir(root) / f"{_unsafe.sub('_', target.lower())}.jsonl"
 
 

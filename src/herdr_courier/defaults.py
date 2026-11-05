@@ -32,3 +32,10 @@ HOLD_TTL = 4 * 3600.0
 HOLD_SUMMARY_EVERY = 15 * 60.0
 # Where `courier send --file` copies files on this PC; "" is the inbox folder in the state directory.
 FILES_INBOX = ""
+
+LEDGER_CONTROLLER = "boss"
+LEDGER_NOTIFY_TO = "secretary"
+LEDGER_NOTIFY_ON_OVERRIDE = True
+LEDGER_NOTIFY_ON_CAPACITY = True
+LEDGER_CHECK_EXECUTION = True
+LEDGER_MEMBERSHIP_FIELD = "lanes"

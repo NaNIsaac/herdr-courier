@@ -1,5 +1,6 @@
 """``config.toml`` in the state directory, laid over the built-in values in ``defaults``."""
 
+import re
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -66,6 +67,23 @@ class Files:
 
 
 @dataclass(frozen=True)
+class Human:
+    name: str = ""
+    default_to: str = ""
+
+
+@dataclass(frozen=True)
+class QuestionProvider:
+    command: tuple[str, ...] = ()
+    timeout: float = 10.0
+
+
+@dataclass(frozen=True)
+class Questions:
+    adapters: dict[str, QuestionProvider] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class Config:
     panes: Panes = Panes()
     doctor: Doctor = Doctor()
@@ -74,6 +92,8 @@ class Config:
     hold: Hold = Hold()
     ledger: Ledger = Ledger()
     files: Files = Files()
+    human: Human = Human()
+    questions: Questions = field(default_factory=Questions)
     path: Path | None = None
 
 
@@ -85,6 +105,8 @@ SECTIONS = {
     "hold": Hold,
     "ledger": Ledger,
     "files": Files,
+    "human": Human,
+    "questions": Questions,
 }
 
 
@@ -104,8 +126,34 @@ def load(path: Path | None = None) -> Config:
         raise ConfigError(f"{path}: {exc}") from exc
     if unknown := sorted(set(data) - set(SECTIONS)):
         raise ConfigError(f"{path}: unknown section [{unknown[0]}]")
-    parts = {name: _section(path, name, cls, data.get(name, {})) for name, cls in SECTIONS.items()}
+    parts = {
+        name: (
+            _questions(path, data.get(name, {}))
+            if name == "questions"
+            else _section(path, name, cls, data.get(name, {}))
+        )
+        for name, cls in SECTIONS.items()
+    }
     return Config(**parts, path=path)
+
+
+def _questions(path: Path, table: Any) -> Questions:
+    if not isinstance(table, dict) or set(table) - {"adapters"}:
+        raise ConfigError(f"{path}: questions must contain only an adapters table")
+    adapters = table.get("adapters", {})
+    if not isinstance(adapters, dict):
+        raise ConfigError(f"{path}: questions.adapters must be a table")
+    providers = {}
+    for name, settings in adapters.items():
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", name) or name == "local":
+            raise ConfigError(f"{path}: invalid provider name {name!r}")
+        provider = _section(path, f"questions.adapters.{name}", QuestionProvider, settings)
+        if not provider.command or any(not arg or "\0" in arg for arg in provider.command):
+            raise ConfigError(f"{path}: provider command must be a nonempty argv list")
+        if provider.timeout <= 0:
+            raise ConfigError(f"{path}: provider timeout must be positive")
+        providers[name] = provider
+    return Questions(providers)
 
 
 def _section(path: Path, name: str, cls: type, table: Any):

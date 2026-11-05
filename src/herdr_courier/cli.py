@@ -179,6 +179,9 @@ def cmd_send(args: argparse.Namespace) -> int:
             print(f"courier: the files were not sent: {item['id']} is a reminder", file=sys.stderr)
             folder = None
     if not args.wait:
+        if getattr(args, "json", False):
+            print(json.dumps(reply, ensure_ascii=False))
+            return 0
         if item["pane_id"]:
             print(f"queued {item['id']} for {item['target']} ({item['pane_id']}){via}")
         else:
@@ -675,6 +678,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--timeout", type=int, metavar="MS", help="total budget for --wait")
     p.add_argument("--source", default=default_source(), help="who is sending (default: pane)")
     p.add_argument("--human", action="store_true", help="put ahead of queued agent messages")
+    p.add_argument("--json", action="store_true", help="print the queue receipt as JSON")
     p.add_argument("--await", dest="await_key")
     p.add_argument("--evidence", action="append", default=[])
     p.add_argument("--due", type=float)

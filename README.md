@@ -469,6 +469,15 @@ keys you change. An unknown key or a wrong type is an error, which `courier doct
 The send conditions, the delivery states and the daemon's security model are in
 [docs/DISPATCH.md](docs/DISPATCH.md).
 
+## Human questions
+
+The distribution also installs `pepperpaw` and `ppw` for a person's messages and questions.
+Configure `human.name` and `questions.adapters` to use `ppw q`, `ppw q provider:id` and
+`ppw a provider:id "answer"`; `answer` aliases `a`, and `--file` reads a multiline UTF-8 answer.
+`ppw send` uses courier's existing human-priority send and attachment path. All commands accept
+`--json`. Without a configured provider, the question list explicitly reports that setup is
+missing. See [the provider protocol and configuration](docs/questions.md).
+
 ## Development
 
 From a clone:

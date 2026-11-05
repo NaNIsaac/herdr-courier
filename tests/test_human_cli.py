@@ -107,6 +107,20 @@ def test_list_get_korean_and_namespaced_ids(providers, capsys):
     assert "첫 질문" in json.loads(capsys.readouterr().out)["item"]["text"]
 
 
+def test_provider_exchange_is_utf8_without_caller_settings(providers, monkeypatch, capsys):
+    # Windows runners default to the ANSI code page; the provider must still print Korean.
+    monkeypatch.delenv("PYTHONUTF8", raising=False)
+    monkeypatch.delenv("PYTHONIOENCODING", raising=False)
+    env = Q.provider_env()
+    assert env["PYTHONUTF8"] == "1" and env["PYTHONIOENCODING"] == "utf-8"
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-16")
+    assert Q.provider_env()["PYTHONIOENCODING"] == "utf-16"
+    monkeypatch.delenv("PYTHONIOENCODING")
+    providers(first="good", second="good")
+    assert H.main(["q", "first:a:17", "--json"]) == 0
+    assert "첫 질문" in json.loads(capsys.readouterr().out)["item"]["text"]
+
+
 def test_answer_file_alias_and_repeat_does_not_answer_twice(providers, tmp_path, capsys):
     paths = providers(first="good")
     answer = tmp_path / "answer.txt"

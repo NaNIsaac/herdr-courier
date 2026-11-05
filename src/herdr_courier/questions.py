@@ -23,6 +23,15 @@ def reject_constant(value: str):
     raise ValueError(f"not a JSON constant: {value}")
 
 
+def provider_env() -> dict[str, str]:
+    """The exchange is UTF-8 both ways. A Python provider on Windows would otherwise read
+    and print with the ANSI code page and fail on the first non-Latin character."""
+    env = dict(os.environ)
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    return env
+
+
 def invoke(provider: QuestionProvider, operation: str, body: dict) -> dict:
     encoded = json.dumps(body, ensure_ascii=False).encode("utf-8")
     if len(encoded) > MAX_INPUT:
@@ -39,6 +48,7 @@ def invoke(provider: QuestionProvider, operation: str, body: dict) -> dict:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 shell=False,
+                env=provider_env(),
             )
 
             def drain(stream, buffer, limit):

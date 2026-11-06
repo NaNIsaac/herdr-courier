@@ -1343,7 +1343,11 @@ class Dispatcher:
         else:
             agent, screen = snapshot
         line = classify(screen, queued=item.text)
-        if line.state is LineState.UNKNOWN and snapshot is None:
+        if (
+            snapshot is None
+            and lines < 256
+            and (line.state is LineState.UNKNOWN or rejection(screen))
+        ):
             screen = self.herdr.read_ansi(item.pane_id, lines=256)
             line = classify(screen, queued=item.text)
         return Observation(

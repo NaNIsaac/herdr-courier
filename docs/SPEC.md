@@ -40,10 +40,12 @@ The existing flat journal and API records retain their field names and order thr
 | `queued` | Accepted for a resolved receiver, or restored before any possible write. May wait, submit, fail or be cancelled. |
 | `waiting` | Gate refuses temporarily, observation fails, receiver is held/missing, or a retryable submit was rejected before writing. Rechecked on worker ticks; may submit, fail or be cancelled. |
 | `submitting` | Journaled immediately before calling the carrier. Cancellation is now refused. Success enters verifying; a known pre-write rejection may return to waiting; other errors fail. |
-| `verifying` | Submit returned; later observations check what happened. May finish sent or failed. A guarded Enter retry stays verifying. |
+| `verifying` | Submit returned; later observations check what happened. May finish sent, rejected, ghost or failed. A guarded Enter retry stays verifying. |
 | `sent` | Verification finished with evidence or an explicitly unconfirmed outcome. Final. |
 | `failed` | Delivery cannot continue safely, retries/hold expired, or an in-flight journal entry was recovered after restart. Final. |
 | `cancelled` | Explicit cancellation before submission. Final. |
+| `rejected` | A fresh receiver usage-limit response was observed after submission. Final; never automatically replayed. |
+| `ghost` | Courier text remains after one Enter retry, or an exact/safe retry cannot be proved. Final; text is left in place. |
 
 The worker is the only pane writer. Ordinary traffic is FIFO per pane; human priority, routing
 and release of held traffic can affect ordering. A message waiting for a missing receiver
@@ -58,6 +60,8 @@ rejections use exponential backoff and a five-attempt limit. Only `agent_blocked
 On restart, queued/waiting work is queued again (name-held work remains held). A record already
 submitting/verifying with a pane becomes failed with delivery unknown; its text is never replayed.
 The journal also binds pending work to a herdr server socket, preventing replay onto another server.
+Recent ghost/rejected records are retained up to the normal finished-item limit without
+requeuing, preserving guarded recovery/status across restarts.
 
 ## Receiver observation and safety
 
@@ -72,6 +76,7 @@ The journal also binds pending work to a herdr server socket, preventing replay 
 | `name` | Identifies receiver-specific between-turn settings and missing-receiver tracking. |
 | `state_seq` | Status-change sequence; paired with status to detect changes between observations and restart settling time. |
 | `terminal` | Captured terminal identity protects a sessionless receiver from pane reuse; a changed terminal fails that binding. |
+| `rejection` | Recognized receiver error evidence, compared with the pre-submit view so an unchanged old limit banner is not a fresh refusal. |
 
 A pane hold also blocks sending. Configured between-turn settling refuses working and requires
 the status/sequence pair to remain unchanged for the configured interval. The dispatcher checks
@@ -87,7 +92,7 @@ The current `Herdr` protocol provides six lower-level methods:
 |---|---|---|
 | `reach(to)` | `agent_get`, `agent_list`, `pane_list` | Resolve a receiver and its identity; enumerate receivers and panes for lookup/status. |
 | `ready(to)` | `agent_get`, `read_ansi` | Build an observation; apply the input, identity, hold, debounce and settling gate. |
-| `deliver(message)` | `submit`, guarded `enter` | Paste and submit text. Enter alone is a single recovery attempt for a matching multiline paste. |
+| `deliver(message)` | `submit`, guarded `enter` | Paste and submit text. Enter alone is a single recovery attempt for a matching single/multiline paste. |
 | `confirm(message)` | `agent_get`, `read_ansi` | Observe status and input after submission; classify evidence, stuck input or an unconfirmed outcome. |
 | `direction` | No method; herdr is push | Sender-side dispatcher initiates the pane write. |
 
@@ -98,12 +103,15 @@ can distinguish safe pre-write rejection from an ambiguous write.
 
 ## What sent proves
 
-After submission the verifier waits up to five seconds. Working/blocked status or a cleared
-input box normally ends as sent. If the deadline passes with text still held in the input,
-delivery fails. An exact multiline match takes precedence over status: after the deadline,
+After submission the verifier waits up to five seconds. A fresh Codex usage-limit response
+ends as rejected, even when agent status still says working. An unchanged pre-submit error
+is not fresh evidence; error text in the input or before a newer transcript prompt is ignored.
+Working/blocked status or a cleared input normally ends as sent. Owned text takes precedence
+over status. An exact single/multiline match can recover after the deadline:
 one Enter may be retried only with a fresh matching observation, idle/done status, no focus
 or hold, and matching captured identity. It never pastes the text again. Still-matching input
-after that retry fails.
+after that retry is ghost. Human edits sharing the original prefix also become ghost without
+an Enter attempt. Ambiguous key transport/journal errors remain failed.
 
 Other inconclusive input at the deadline becomes sent with an `unconfirmed:` reason.
 An observation error while in flight also becomes unconfirmed sent once its deadline passes.
@@ -115,8 +123,36 @@ The implementation avoids a second possibly successful text submission for a ret
 ambiguous writes fail rather than retry, and restart does not replay in-flight text.
 This is not end-to-end exactly-once delivery. Pre-write retries are allowed, one Enter recovery
 is allowed, and client deduplication lasts only while an item is retained. A sender using a
-new identifier can send the same text again. Receiver-side rejection such as a usage limit
-is not currently a distinct delivery state.
+new identifier can send the same text again. Rejected/ghost are carrier outcomes; mailbox
+read/done and task completion are still independent.
+
+## Guarded submit recovery
+
+`courier submit TARGET` requests Enter only, never arbitrary text or another paste.
+The HTTP handler schedules the request; the existing dispatcher worker remains the only
+pane writer. Concurrent pending requests for one pane share the same result.
+
+The worker compares the current input with complete retained courier message text, including
+renderer continuation indentation. Shared prefixes/substrings do not prove ownership.
+It re-reads immediately before Enter and refuses edits, unknown/dialog input, focus, holds,
+working/blocked receivers, visible usage refusal and changed/missing captured identity.
+Cancelled/rejected records cannot authorize a key. Recent sent records can authorize explicit
+recovery of an older dispatcher's false-positive sent outcome, only with the same exact guards.
+
+The Enter intent and retry marker are journaled before the key. Recovery moves the record
+to the head in verifying state; its cleared input is checked normally. A crash never replays
+that key or message. CLI success may mean verifying, not proven receipt; inspect status.
+There is no force/raw-input fallback. A timed-out request may still be pending.
+
+Unknown input gets one larger read capped at 256 lines. A dim, exact Codex placeholder with
+its shortcuts footer can prove empty input when padding is missing. Known queued multiline
+text can prove typed input without a background; it never proves empty. Dialog choices and
+unrecognized layouts stay unknown. Very long/truncated or differently wrapped text may
+remain unrecoverable rather than permit an unproved key.
+
+Upgrade both client and serve before using the new outcomes/command. A 0.2.0 serve process
+has only the older multiline recovery and no submit endpoint; changing installed files does
+not update an already-running process. No deployment/restart is performed by this change.
 
 ## Setup policy configuration
 

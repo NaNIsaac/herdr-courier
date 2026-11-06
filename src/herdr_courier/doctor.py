@@ -226,7 +226,7 @@ def check_queue(status: dict[str, Any], now: float) -> Check:
     failed = [
         i
         for i in status["recent"]
-        if i["state"] == "failed" and now - i["updated"] < RECENT_FAILURE
+        if i["state"] in ("failed", "rejected", "ghost") and now - i["updated"] < RECENT_FAILURE
     ]
     detail = f"{len(pending)} queued, {len(holds)} held"
     problems = []

@@ -96,6 +96,18 @@ name or a pane id, the same targets `herdr agent prompt` takes.
 
 ## Examples
 
+### Recover an unsubmitted courier paste
+
+Use `courier status receiver` to inspect delivery. If a courier paste remains in that
+receiver's input, `courier submit receiver` asks the dispatcher for Enter only. It requires
+the entire input to equal a retained courier message and fresh identity/status/focus/hold
+checks; it refuses human edits and unknown input. It never re-pastes or offers a force mode.
+The result may still be verifying; check status again for confirmation.
+
+New `ghost` and `rejected` outcomes are final unsuccessful deliveries, not successful receipt.
+Automatic Enter recovery is bounded to one attempt. See [delivery safety](docs/SPEC.md).
+Upgrade/restart serve together with the client; the older 0.2.0 process lacks this endpoint.
+
 ### Durable task dispatch
 
 Add `--await` and at least one evidence pointer when a task must survive the sender's

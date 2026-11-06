@@ -111,8 +111,9 @@ def test_text_stuck_in_box_fails_once_and_is_not_resent(herdr, make_dispatcher, 
     d = make_dispatcher()
     item = d.enqueue("w1:p1", "[lane] report", source="t")
     run(d, 15)
-    assert item.state is State.FAILED
-    assert item.reason.startswith("stuck_in_input")
+    assert item.state is State.GHOST
+    assert item.reason.startswith("ghost:")
+    assert pane.enter_calls == 1
     assert pane.submit_calls == 1
 
 

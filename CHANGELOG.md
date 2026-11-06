@@ -5,6 +5,14 @@
 - Add `ppw where NAME` to show a tab, pane label and pane id by exact agent name,
   pane label or service label suffix. `--focus` focuses an agent pane, or a service's
   tab when no agent runs there. Ambiguous names never change focus.
+- Distinguish receiver `rejected` usage-limit responses and unsubmitted `ghost` text from sent.
+  Exact single/multiline pastes get at most one guarded Enter retry; recent ghost/rejected
+  records survive restart without replay. Known Codex placeholder/footer and complete queued
+  multiline layouts have bounded input-detection fallbacks.
+- Add `courier submit TARGET`: the sole dispatcher worker may press Enter only for complete
+  retained courier text under fresh receiver/input/hold/focus guards. It never types text,
+  accepts a shared prefix or replays a key after restart. Doctor and send --wait handle the
+  new outcomes. Upgrade client and serve together.
 
 - `install.ps1` and `install.sh`: one line installs courier on a machine with nothing on it. They
   install uv if it is missing, then install the main branch from its source archive, so git is

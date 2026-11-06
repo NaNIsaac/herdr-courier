@@ -231,6 +231,7 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
 
     if method == "POST" and path in (
         "send",
+        "submit",
         "hold",
         "release",
         "await/reassign",
@@ -349,6 +350,15 @@ def route(service: DispatchService, method: str, path: str, query: dict, body: d
         case "POST", "cancel":
             item_id = _text(body, "id", 1, 32)
             return {"item": run(lambda: d.cancel(item_id)).as_dict()}
+        case "POST", "submit":
+            target = _text(body, "target", 1, 64)
+            try:
+                item = run(lambda: d.request_submit(target).result(timeout=10))
+            except TimeoutError as exc:
+                raise BadRequest(
+                    408, "submit request is pending; inspect status before retrying"
+                ) from exc
+            return {"item": item.as_dict()}
     raise BadRequest(404, f"no route {method} /api/dispatch/{path}")
 
 

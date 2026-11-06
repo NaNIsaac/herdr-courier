@@ -167,6 +167,17 @@ def test_queue_problems(roots):
     assert "1 failed in the last hour (last: pane gone)" in queue.detail
 
 
+@pytest.mark.parametrize("state", ["ghost", "rejected"])
+def test_queue_warns_about_unaccepted_terminal_outcomes(state):
+    from herdr_courier.doctor import check_queue
+
+    check = check_queue(
+        {"panes": {}, "recent": [{"state": state, "updated": NOW, "reason": state}]}, NOW
+    )
+    assert check.level is Level.WARN
+    assert state in check.detail
+
+
 def test_journal_with_unreadable_lines(roots):
     (roots[0] / "journal.jsonl").write_text('{"event": "hold"}\nnot json\n', encoding="utf-8")
     journal = run(FakeProbes(), roots)["journal"]

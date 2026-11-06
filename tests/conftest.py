@@ -25,6 +25,7 @@ class FakePane:
     submitted: list[str] = field(default_factory=list)
     submit_calls: int = 0
     terminal: str | None = None
+    enter_calls: int = 0
 
     def screen(self) -> str:
         if self.dialog:
@@ -94,6 +95,9 @@ class FakeHerdr:
                 pane.box += text
             case code:
                 raise HerdrError(code, "fake failure")
+
+    def enter(self, pane_id: str) -> None:
+        self._pane(pane_id)[1].enter_calls += 1
 
 
 class FakeClock:

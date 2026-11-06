@@ -1781,12 +1781,13 @@ class Dispatcher:
             if item.target in self.hold_missing and item.session:
                 self.seen[item.target] = item.session
         retained = sorted(
-            (item for item in items.values() if item.state in (State.GHOST, State.REJECTED)),
+            (item for item in items.values() if item.state in FINAL),
             key=lambda item: item.updated,
         )[-KEEP_FINISHED:]
         for item in retained:
-            self.items[item.id] = item
-            self._record(item, item.reason, full=True)
+            if item.state in (State.GHOST, State.REJECTED):
+                self.items[item.id] = item
+                self._record(item, item.reason, full=True)
         for item in pending:
             item.retry_at = 0.0
             item.updated = time.time()

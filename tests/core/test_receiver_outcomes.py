@@ -63,6 +63,18 @@ def test_owned_plain_codex_multiline_is_only_typed_on_complete_match():
     assert classify("\n› 1. Yes\n  2. No\n\n", queued="1. Yes\n2. No").state is LineState.UNKNOWN
 
 
+def test_edited_owned_input_is_ghost_even_when_agent_status_is_working(herdr, make_dispatcher, run):
+    pane = herdr.add("w1", submit_mode="stuck", terminal="term")
+    dispatcher = make_dispatcher()
+    item = dispatcher.enqueue("w1", "courier text", source="test")
+    run(dispatcher, 2)
+    pane.box += " human edit"
+    pane.status = "working"
+    run(dispatcher, 10)
+    assert item.state is State.GHOST
+    assert not pane.enter_calls
+
+
 @pytest.mark.parametrize(
     "text",
     [

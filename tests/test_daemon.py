@@ -14,6 +14,55 @@ from herdr_courier.daemon import AlreadyRunning, DispatchService, InstanceLock
 from herdr_courier.state import endpoint_path, journal_path, lock_path
 
 
+def test_submit_endpoint_does_not_accept_arbitrary_text(herdr, start):
+    pane = herdr.add("w1", box="human draft", terminal="term")
+    server, service = start(herdr)
+    status, reply = call(
+        server,
+        "POST",
+        "/api/dispatch/submit",
+        {"target": "w1", "text": "human draft"},
+        service.token,
+    )
+    assert status == 400
+    assert "does not equal" in reply["detail"]
+    assert pane.box == "human draft" and not pane.enter_calls
+
+
+def test_submit_endpoint_runs_recovery_on_dispatch_thread(herdr, start, monkeypatch):
+    pane = herdr.add("w1", box="known message", terminal="term")
+    server, service = start(herdr)
+    item = service.dispatcher.enqueue("w1", "known message", source="test")
+    writers = []
+
+    def enter(target):
+        writers.append(threading.current_thread().name)
+        pane.box = ""
+        pane.status = "working"
+
+    monkeypatch.setattr(herdr, "enter", enter)
+    status, reply = call(server, "POST", "/api/dispatch/submit", {"target": "w1"}, service.token)
+    assert status == 200
+    assert reply["item"]["id"] == item.id
+    assert writers == ["dispatch"]
+    assert pane.submit_calls == 0
+
+
+def test_submit_checks_server_binding(herdr, start):
+    pane = herdr.add("w1", box="known message", terminal="term")
+    server, service = start(herdr, server="socket-a")
+    service.dispatcher.enqueue("w1", "known message", source="test")
+    status, _ = call(
+        server,
+        "POST",
+        "/api/dispatch/submit",
+        {"target": "w1", "herdr_socket": "socket-b"},
+        service.token,
+    )
+    assert status == 409
+    assert not pane.enter_calls
+
+
 def test_routes_need_the_token(herdr, start):
     herdr.add("w1:p1", "boss")
     server, service = start(herdr)

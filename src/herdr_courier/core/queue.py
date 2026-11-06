@@ -1213,15 +1213,15 @@ class Dispatcher:
             if item.id not in self._enter_retried:
                 return True
             self._finish(item, State.GHOST, "ghost: text remains after one Enter retry")
+        elif holds(obs.line, item.text):
+            if now >= item.verify_until:
+                self._finish(item, State.GHOST, "ghost: edited text remains in the input box")
         elif obs.status in ("working", "blocked"):
             self._finish(item, State.SENT, f"agent {obs.status} after submit")
         elif obs.line.state is LineState.EMPTY:
             self._finish(item, State.SENT, f"input box cleared ({obs.line.evidence})")
         elif now < item.verify_until:
             return False
-        elif holds(obs.line, item.text):
-            # Enter did not take. Leave the text for a human to see; never resend.
-            self._finish(item, State.GHOST, "ghost: text is still in the input box")
         else:
             self._finish(item, State.SENT, f"unconfirmed: {obs.line.evidence}")
         return False
@@ -1269,7 +1269,9 @@ class Dispatcher:
                 self._finish(item, State.FAILED, f"cannot journal Enter intent: {exc}")
                 raise DispatchError("cannot journal Enter intent; no key sent") from exc
             queue = self.queues.setdefault(item.pane_id, [])
-            if item.id not in queue:
+            if manual or item.id not in queue:
+                if item.id in queue:
+                    queue.remove(item.id)
                 queue.insert(0, item.id)
         try:
             self.herdr.enter(item.pane_id)
@@ -1315,7 +1317,11 @@ class Dispatcher:
                 self._retry_enter(item, manual=True)
                 future.set_result(item)
             except Exception as exc:  # noqa: BLE001 - every request must resolve its waiting client
-                future.set_exception(exc)
+                future.set_exception(
+                    exc
+                    if isinstance(exc, DispatchError)
+                    else DispatchError(f"submit request could not complete: {exc}; inspect status")
+                )
             finally:
                 with self.lock:
                     if self._submit_requests.get(pane_id) is future:

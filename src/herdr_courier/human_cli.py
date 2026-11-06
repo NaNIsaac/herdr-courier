@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from . import cli, config, display, questions
+from .core.transport import CliHerdr, HerdrError
 
 
 def print_text(text: str, width: int) -> None:
@@ -34,9 +35,44 @@ def emit(value: dict) -> None:
     print(json.dumps(value, ensure_ascii=False))
 
 
+def where(herdr, name: str, *, focus: bool, separator: str) -> int:
+    tabs = {tab["tab_id"]: tab for tab in herdr.tab_list()}
+    agents = {agent["pane_id"]: agent for agent in herdr.agent_list()}
+    found = []
+    for pane in herdr.pane_list():
+        label = pane.get("label") or ""
+        service = label.partition(separator)[2] if separator else ""
+        agent = agents.get(pane["pane_id"], {})
+        if name and name in (agent.get("name"), label, service, pane["pane_id"]):
+            found.append(pane)
+    if not found:
+        raise questions.ProviderError(f"no pane matches {name!r}")
+    if len(found) != 1:
+        ids = ", ".join(pane["pane_id"] for pane in found)
+        raise questions.ProviderError(
+            f"ambiguous name {name!r}: {ids}; use a full label or pane id"
+        )
+    pane = found[0]
+    tab_id = pane["tab_id"]
+    if focus:
+        if pane["pane_id"] in agents:
+            herdr.agent_focus(pane["pane_id"])
+        else:
+            herdr.tab_focus(tab_id)
+    line = ", ".join(
+        (
+            tabs.get(tab_id, {}).get("label") or tab_id,
+            pane.get("label") or "(unlabelled)",
+            pane["pane_id"],
+        )
+    )
+    print("".join(" " if c.isspace() or ord(c) < 32 or 127 <= ord(c) < 160 else c for c in line))
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
-        prog="ppw", description="Read and answer questions, or send a message."
+        prog="ppw", description="Read and answer questions, send messages, or locate panes."
     )
     commands = result.add_subparsers(dest="command", required=True)
     listing = commands.add_parser("q", help="list questions, or view one provider:id")
@@ -51,6 +87,14 @@ def parser() -> argparse.ArgumentParser:
     sending.add_argument("text", nargs="?", default="")
     sending.add_argument("--to")
     sending.add_argument("--file", action="append", default=[])
+    locating = commands.add_parser("where", help="locate an agent, pane label or service label")
+    locating.add_argument("name")
+    locating.add_argument(
+        "--focus",
+        action="store_true",
+        help="focus the agent pane; for a non-agent service, focus its tab and print the pane",
+    )
+    locating.set_defaults(json=False, width=None)
     for command in (listing, answering, sending):
         command.add_argument("--json", action="store_true")
         command.add_argument(
@@ -66,6 +110,10 @@ def main(argv: list[str] | None = None) -> int:
         if width < 4:
             raise questions.ProviderError("width must be at least 4")
         settings = config.load()
+        if args.command == "where":
+            return where(
+                CliHerdr(), args.name, focus=args.focus, separator=settings.panes.separator
+            )
         adapters = settings.questions.adapters
         if args.command == "q" and not adapters:
             message = "No question providers configured."
@@ -144,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
                 width,
             )
         return 0
-    except (config.ConfigError, questions.ProviderError, OSError, UnicodeError) as exc:
+    except (config.ConfigError, questions.ProviderError, HerdrError, OSError, UnicodeError) as exc:
         if args.json:
             emit({"error": str(exc)})
         else:

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add `ppw where NAME` to show a tab, pane label and pane id by exact agent name,
+  pane label or service label suffix. `--focus` focuses an agent pane, or a service's
+  tab when no agent runs there. Ambiguous names never change focus.
+
 - `install.ps1` and `install.sh`: one line installs courier on a machine with nothing on it. They
   install uv if it is missing, then install the main branch from its source archive, so git is
   not needed either.

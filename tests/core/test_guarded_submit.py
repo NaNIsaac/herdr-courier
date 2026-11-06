@@ -4,7 +4,7 @@ import threading
 import pytest
 
 from herdr_courier import cli
-from herdr_courier.core.queue import Dispatcher, DispatchError, State
+from herdr_courier.core.queue import Dispatcher, DispatchError, State, WrongServer
 
 
 def test_submit_is_worker_owned_and_exact_without_pasting(herdr, make_dispatcher, run, monkeypatch):
@@ -137,3 +137,17 @@ def test_failed_final_journal_write_keeps_item_in_its_queue(
         dispatcher._finish(item, State.GHOST, "ghost")
     assert item.state is State.VERIFYING
     assert item.id in dispatcher.queues["w1"]
+
+
+def test_recoverable_ghost_cannot_cross_herdr_servers(herdr, clock, tmp_path, run):
+    pane = herdr.add("w1", submit_mode="stuck", terminal="term")
+    dispatcher = Dispatcher(
+        herdr, tmp_path / "journal", clock=clock, server="socket-a", log=lambda _: None
+    )
+    item = dispatcher.enqueue("w1", "owned body", source="test")
+    run(dispatcher, 15)
+    assert item.state is State.GHOST
+    before = pane.enter_calls
+    with pytest.raises(WrongServer):
+        Dispatcher(herdr, tmp_path / "journal", clock=clock, server="socket-b", log=lambda _: None)
+    assert pane.enter_calls == before

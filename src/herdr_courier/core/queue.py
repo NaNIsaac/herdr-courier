@@ -1733,6 +1733,10 @@ class Dispatcher:
                             setattr(item, key, entry[key])
             if entry.get("event") == "item" and entry.get("enter_retried"):
                 self._enter_retried.add(entry["id"])
+        retained = sorted(
+            (item for item in items.values() if item.state in FINAL),
+            key=lambda item: item.updated,
+        )[-KEEP_FINISHED:]
         pending = sorted(
             (i for i in items.values() if i.state not in FINAL), key=lambda i: i.created
         )
@@ -1748,13 +1752,15 @@ class Dispatcher:
             and not same_socket(bound, self.server)
             and (
                 pending
+                or any(item.state is State.GHOST for item in retained)
                 or live_holds
                 or any(t["state"] in ledger.ACTIVE for t in self.tasks.values())
             )
         ):
             raise WrongServer(
                 f"{self.journal} holds {len(pending)} queued messages and {len(live_holds)} "
-                f"holds for the herdr server at {bound}, but herdr here reaches {self.server}. "
+                f"holds/recoverable ghosts for the herdr server at {bound}, "
+                f"but herdr here reaches {self.server}. "
                 f"Start courier serve where HERDR_SOCKET_PATH is {bound}, or give this server its "
                 "own COURIER_STATE_DIR."
             )
@@ -1780,10 +1786,6 @@ class Dispatcher:
         for item in sorted(items.values(), key=lambda i: i.created):
             if item.target in self.hold_missing and item.session:
                 self.seen[item.target] = item.session
-        retained = sorted(
-            (item for item in items.values() if item.state in FINAL),
-            key=lambda item: item.updated,
-        )[-KEEP_FINISHED:]
         for item in retained:
             if item.state in (State.GHOST, State.REJECTED):
                 self.items[item.id] = item

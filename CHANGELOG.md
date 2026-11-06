@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add `ppw where NAME` to show a tab, pane label and pane id by exact agent name,
+  pane label or service label suffix. `--focus` focuses an agent pane, or a service's
+  tab when no agent runs there. Ambiguous names never change focus.
 - Distinguish receiver `rejected` usage-limit responses and unsubmitted `ghost` text from sent.
   Exact single/multiline pastes get at most one guarded Enter retry; recent ghost/rejected
   records survive restart without replay. Known Codex placeholder/footer and complete queued

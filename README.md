@@ -486,9 +486,16 @@ The send conditions, the delivery states and the daemon's security model are in
 The distribution also installs `pepperpaw` and `ppw` for a person's messages and questions.
 Configure `human.name` and `questions.adapters` to use `ppw q`, `ppw q provider:id` and
 `ppw a provider:id "answer"`; `answer` aliases `a`, and `--file` reads a multiline UTF-8 answer.
-`ppw send` uses courier's existing human-priority send and attachment path. All commands accept
+`ppw send` uses courier's existing human-priority send and attachment path. These commands accept
 `--json`. Without a configured provider, the question list explicitly reports that setup is
 missing. See [the provider protocol and configuration](docs/questions.md).
+
+`ppw where NAME` prints one line: `tab, pane label, pane id`. It matches an exact agent name,
+pane label, or the service name after the configured pane-label separator (for example,
+`monitor` in `service · monitor`). A pane id also works. No human identity or question provider
+configuration is needed. Ambiguous names fail with candidate ids instead of choosing a pane.
+`ppw where NAME --focus` jumps to an agent pane; for a service without an agent it focuses the
+containing tab and prints which pane to use. It does not send terminal input.
 
 ## Development
 

@@ -24,6 +24,7 @@ text over more than one row is UNKNOWN until it is sent or cleared.
 import re
 from dataclasses import dataclass
 from enum import StrEnum
+from hashlib import sha256
 
 SGR = re.compile(r"\x1b\[([0-9;:]*)m")
 OTHER_ESCAPE = re.compile(r"\x1b\[[0-9;?:]*[A-Za-ln-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
@@ -178,6 +179,21 @@ def _classify_plain_codex(lines: list[str], plain: list[str]) -> InputLine:
         (i for i in range(len(lines) - 1, -1, -1) if plain[i].lstrip().startswith(CODEX_PROMPT)),
         None,
     )
+    if at is not None:
+        styled = _styled(lines[at])
+        start = next(i for i, (c, _) in enumerate(styled) if c == CODEX_PROMPT) + 1
+        chars = styled[start:]
+        text = "".join(c for c, _ in chars).strip()
+        ink = [style for c, style in chars if not c.isspace()]
+        footer = plain[at + 1 :]
+        if (
+            text == "Ask Codex to do anything"
+            and _placeholder(ink)
+            and (at == 0 or plain[at - 1].strip() or at + 1 < len(plain) and plain[at + 1].strip())
+            and any("? for shortcuts" in row for row in footer)
+            and not any(re.match(r"\s*(?:[›>]\s*)?\d+[.)]\s", row) for row in footer)
+        ):
+            return InputLine(LineState.EMPTY, "", "codex dim placeholder with shortcuts footer")
     if (
         at is None
         or at == 0
@@ -203,12 +219,36 @@ def _classify_plain_codex(lines: list[str], plain: list[str]) -> InputLine:
     return InputLine(LineState.TYPED, text, f"codex typed {text[:60]!r} (no background)")
 
 
-def classify(screen: str) -> InputLine:
+def _owned_codex(plain: list[str], queued: str, unknown: InputLine) -> InputLine:
+    at = next(
+        (i for i in range(len(plain) - 1, -1, -1) if plain[i].lstrip().startswith(CODEX_PROMPT)),
+        None,
+    )
+    if at is None or at == 0 or plain[at - 1].strip():
+        return unknown
+    end = next((i for i in range(at + 1, len(plain)) if not plain[i].strip()), None)
+    if end is None:
+        return unknown
+    body = [plain[at].lstrip()[1:].lstrip(), *plain[at + 1 : end]]
+    if any(re.match(r"\s*\d+[.)]\s", row) for row in body):
+        return unknown
+    if any(not row.startswith("  ") for row in plain[at + 1 : end]):
+        return unknown
+    line = InputLine(LineState.TYPED, "\n".join(body).strip(), "codex complete queued multiline")
+    return line if matches(line, queued) else unknown
+
+
+def classify(screen: str, *, queued: str | None = None) -> InputLine:
     lines = screen.splitlines()
     plain = [_plain(ln) for ln in lines]
     rules = [i for i, ln in enumerate(plain) if ln.strip().startswith(RULE)]
     if len(rules) < 2:
-        return _classify_codex(lines, plain)
+        line = _classify_codex(lines, plain)
+        return (
+            _owned_codex(plain, queued, line)
+            if (queued and line.state is LineState.UNKNOWN)
+            else line
+        )
     top, bottom = rules[-2], rules[-1]
     # Blank rows under the top rule hold no input; some consoles redraw with one there.
     while top + 1 < bottom and not plain[top + 1].strip():
@@ -248,3 +288,19 @@ def matches(line: InputLine, sent: str) -> bool:
         return False
     text = sent.replace("\r\n", "\n").strip()
     return bool(text) and line.text == "\n  ".join(text.split("\n"))
+
+
+def rejection(screen: str) -> str | None:
+    """Only a current Codex error outside its input, not quoted/user/history text."""
+    rows = [_plain(row) for row in screen.splitlines()]
+    prompts = [at for at, row in enumerate(rows) if row.lstrip().startswith(CODEX_PROMPT)]
+    if not prompts:
+        return None
+    end = prompts[-1]
+    start = prompts[-2] + 1 if len(prompts) > 1 else 0
+    for row in rows[start:end]:
+        if re.match(r"^\s*(?:■\s*)?You(?:[’']ve| have) hit your usage limit\b", row, re.IGNORECASE):
+            context = "\n".join(rows[max(0, start - 1) : end])
+            evidence = sha256(context.encode()).hexdigest()[:12]
+            return f"codex_usage_limit: receiver reports its usage limit ({evidence})"
+    return None

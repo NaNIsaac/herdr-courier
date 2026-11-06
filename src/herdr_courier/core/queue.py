@@ -12,6 +12,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable
+from concurrent.futures import Future
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
@@ -20,7 +21,7 @@ from typing import Any
 
 from .. import defaults, ledger, mailbox, probes, routes
 from .gate import Observation, check
-from .inputline import InputLine, LineState, classify, holds, matches
+from .inputline import InputLine, LineState, classify, holds, matches, rejection
 from .transport import Herdr, HerdrError, same_socket
 
 VERIFY_SECONDS = 5.0
@@ -51,9 +52,11 @@ class State(StrEnum):
     SENT = "sent"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    REJECTED = "rejected"
+    GHOST = "ghost"
 
 
-FINAL = frozenset({State.SENT, State.FAILED, State.CANCELLED})
+FINAL = frozenset({State.SENT, State.FAILED, State.CANCELLED, State.REJECTED, State.GHOST})
 # From the moment the write may have started; such an item is never written again.
 IN_FLIGHT = frozenset({State.SUBMITTING, State.VERIFYING})
 
@@ -228,6 +231,8 @@ class Dispatcher:
         self.lock = threading.Condition()
         self.items: dict[str, Item] = {}
         self._enter_retried: set[str] = set()
+        self._submit_requests: dict[str, Future[Item]] = {}
+        self._rejections_before: dict[str, str | None] = {}
         self.queues: dict[str, list[str]] = {}
         self.holds: dict[str, Hold] = {}
         self.watch: dict[str, PaneWatch] = {}
@@ -969,6 +974,7 @@ class Dispatcher:
             }
 
     def tick(self) -> None:
+        self._submit_owned_requests()
         if self.tasks or self.ledger_notices:
             with self.lock:
                 self._flush_task_notices()
@@ -1177,6 +1183,7 @@ class Dispatcher:
             # Journalled before the write: after a crash from here on the item is replayed as
             # FAILED and a cancel is refused, so the message can never be written twice.
             self._set(item, State.SUBMITTING, "writing to the pane")
+            self._rejections_before[item.id] = final.rejection
             # The next message must see the box empty for a full debounce after this write.
             self.watch.setdefault(pane_id, PaneWatch()).empty_since = None
         try:
@@ -1198,35 +1205,44 @@ class Dispatcher:
             self._set(item, State.VERIFYING, "submitted, confirming")
 
     def _verify(self, item: Item, obs: Observation, now: float) -> bool:
-        if "\n" in item.text and matches(obs.line, item.text):
+        if obs.rejection and obs.rejection != self._rejections_before.get(item.id):
+            self._finish(item, State.REJECTED, obs.rejection)
+        elif matches(obs.line, item.text):
             if now < item.verify_until:
                 return False
             if item.id not in self._enter_retried:
                 return True
-            self._finish(item, State.FAILED, "stuck_in_input: text remains after one Enter retry")
+            self._finish(item, State.GHOST, "ghost: text remains after one Enter retry")
+        elif holds(obs.line, item.text):
+            if now >= item.verify_until:
+                self._finish(item, State.GHOST, "ghost: edited text remains in the input box")
         elif obs.status in ("working", "blocked"):
             self._finish(item, State.SENT, f"agent {obs.status} after submit")
         elif obs.line.state is LineState.EMPTY:
             self._finish(item, State.SENT, f"input box cleared ({obs.line.evidence})")
         elif now < item.verify_until:
             return False
-        elif holds(obs.line, item.text):
-            # Enter did not take. Leave the text for a human to see; never resend.
-            self._finish(item, State.FAILED, "stuck_in_input: text is still in the input box")
         else:
             self._finish(item, State.SENT, f"unconfirmed: {obs.line.evidence}")
         return False
 
-    def _retry_enter(self, item: Item) -> None:
+    def _retry_enter(self, item: Item, *, manual: bool = False) -> None:
         # Re-observe outside the lock so a hold arriving during the CLI reads can be honoured.
-        final = self._observe(item)
+        final = self._read(item) if manual else self._observe(item)
         with self.lock:
-            if item.state in FINAL:
+            if item.state in FINAL and not manual:
                 return
             if final is None:
-                self._finish(item, State.FAILED, "stuck_in_input: cannot confirm safe Enter retry")
+                self._finish(item, State.GHOST, "ghost: cannot confirm safe Enter retry")
+                return
+            if final.rejection:
+                self._finish(item, State.REJECTED, final.rejection)
+                if manual:
+                    raise DispatchError(final.rejection)
                 return
             if not matches(final.line, item.text):
+                if manual:
+                    raise DispatchError("input no longer equals the complete queued message")
                 self._verify(item, final, self.clock())
                 return
             if (
@@ -1239,12 +1255,24 @@ class Dispatcher:
                 or item.terminal
                 and final.terminal != item.terminal
             ):
-                self._finish(
-                    item, State.FAILED, "stuck_in_input: Enter retry refused by target guards"
-                )
+                if manual:
+                    raise DispatchError(
+                        "submit refused by focus, hold, status or receiver identity"
+                    )
+                self._finish(item, State.GHOST, "ghost: Enter retry refused by target guards")
                 return
             self._enter_retried.add(item.id)
-            self._set(item, State.VERIFYING, "retrying Enter once", enter_retried=True)
+            try:
+                self._set(item, State.VERIFYING, "retrying Enter once", enter_retried=True)
+            except OSError as exc:
+                self._enter_retried.discard(item.id)
+                self._finish(item, State.FAILED, f"cannot journal Enter intent: {exc}")
+                raise DispatchError("cannot journal Enter intent; no key sent") from exc
+            queue = self.queues.setdefault(item.pane_id, [])
+            if manual or item.id not in queue:
+                if item.id in queue:
+                    queue.remove(item.id)
+                queue.insert(0, item.id)
         try:
             self.herdr.enter(item.pane_id)
         except Exception as exc:  # noqa: BLE001 - a key may have landed; never retry it again
@@ -1255,11 +1283,87 @@ class Dispatcher:
             item.verify_until = self.clock() + VERIFY_SECONDS
             self._set(item, State.VERIFYING, "Enter retried once, confirming")
 
-    def _observe(self, item: Item) -> Observation | None:
-        try:
+    def request_submit(self, target: str) -> Future[Item]:
+        pane_id = self.resolve(target)
+        with self.lock:
+            if pane_id not in self._submit_requests:
+                self._journal({"event": "submit_request", "pane_id": pane_id})
+                self._submit_requests[pane_id] = Future()
+            return self._submit_requests[pane_id]
+
+    def _submit_owned_requests(self) -> None:
+        with self.lock:
+            requests = list(self._submit_requests.items())
+        for pane_id, future in requests:
+            try:
+                if not future.set_running_or_notify_cancel():
+                    continue
+                with self.lock:
+                    items = sorted(
+                        (
+                            item
+                            for item in self.items.values()
+                            if item.pane_id == pane_id
+                            and item.state not in (State.CANCELLED, State.REJECTED)
+                        ),
+                        key=lambda item: (item.state in IN_FLIGHT, item.updated),
+                        reverse=True,
+                    )
+                if not items:
+                    raise DispatchError("input does not equal any retained queued courier message")
+                snapshot = (self.herdr.agent_get(pane_id), self.herdr.read_ansi(pane_id, lines=256))
+                item = next(
+                    (
+                        item
+                        for item in items
+                        if matches(self._read(item, snapshot=snapshot).line, item.text)
+                    ),
+                    None,
+                )
+                if item is None:
+                    raise DispatchError("input does not equal any retained queued courier message")
+                self._retry_enter(item, manual=True)
+                future.set_result(item)
+            except Exception as exc:  # noqa: BLE001 - every request must resolve its waiting client
+                future.set_exception(
+                    exc
+                    if isinstance(exc, DispatchError)
+                    else DispatchError(f"submit request could not complete: {exc}; inspect status")
+                )
+            finally:
+                with self.lock:
+                    if self._submit_requests.get(pane_id) is future:
+                        del self._submit_requests[pane_id]
+
+    def _read(self, item: Item, *, snapshot: tuple[dict, str] | None = None) -> Observation:
+        if snapshot is None:
             agent = self.herdr.agent_get(item.pane_id)
             lines = min(256, max(12, item.text.count("\n") + 7))
-            line = classify(self.herdr.read_ansi(item.pane_id, lines=lines))
+            screen = self.herdr.read_ansi(item.pane_id, lines=lines)
+        else:
+            agent, screen = snapshot
+        line = classify(screen, queued=item.text)
+        if (
+            snapshot is None
+            and lines < 256
+            and (line.state is LineState.UNKNOWN or rejection(screen))
+        ):
+            screen = self.herdr.read_ansi(item.pane_id, lines=256)
+            line = classify(screen, queued=item.text)
+        return Observation(
+            status=agent.get("agent_status", "unknown"),
+            session=(agent.get("agent_session") or {}).get("value"),
+            focused=bool(agent.get("focused")),
+            line=line,
+            name=agent.get("name"),
+            state_seq=agent.get("state_change_seq"),
+            terminal=agent.get("terminal_id"),
+            rejection=rejection(screen),
+        )
+
+    def _observe(self, item: Item) -> Observation | None:
+        try:
+            obs = self._read(item)
         except HerdrError as exc:
             with self.lock:
                 if item.state in IN_FLIGHT:
@@ -1280,22 +1384,12 @@ class Dispatcher:
                     item.retry_at = self.clock() + 2.0**item.attempts
                 self._set(item, State.WAITING, f"cannot observe: {exc}")
             return None
-        obs = Observation(
-            status=agent.get("agent_status", "unknown"),
-            session=(agent.get("agent_session") or {}).get("value"),
-            focused=bool(agent.get("focused")),
-            line=line,
-            name=agent.get("name"),
-            state_seq=agent.get("state_change_seq"),
-            terminal=agent.get("terminal_id"),
-        )
         with self.lock:
             if obs.name in self.hold_missing and obs.session:
                 self.seen[obs.name] = obs.session
-            self.watch.setdefault(
-                item.pane_id, PaneWatch()
-            ).last = (
-                f"{obs.status}, {'focused, ' if obs.focused else ''}{line.state}: {line.evidence}"
+            self.watch.setdefault(item.pane_id, PaneWatch()).last = (
+                f"{obs.status}, {'focused, ' if obs.focused else ''}"
+                f"{obs.line.state}: {obs.line.evidence}"
             )
         return obs
 
@@ -1520,16 +1614,17 @@ class Dispatcher:
         self.lock.notify_all()
 
     def _finish(self, item: Item, state: State, reason: str) -> None:
+        self._set(item, state, reason)
         queue = self.queues.get(item.pane_id, [])
         if item.id in queue:
             queue.remove(item.id)
         if (missing := self.missing.get(item.target)) and item.id in missing.items:
             missing.items.remove(item.id)
-        self._set(item, state, reason)
         finished = [i for i in self.items.values() if i.state in FINAL]
         for old in sorted(finished, key=lambda i: i.updated)[:-KEEP_FINISHED]:
             del self.items[old.id]
             self._enter_retried.discard(old.id)
+            self._rejections_before.pop(old.id, None)
 
     def _record(
         self, item: Item, reason: str, *, full: bool = False, task: dict | None = None
@@ -1638,6 +1733,10 @@ class Dispatcher:
                             setattr(item, key, entry[key])
             if entry.get("event") == "item" and entry.get("enter_retried"):
                 self._enter_retried.add(entry["id"])
+        retained = sorted(
+            (item for item in items.values() if item.state in FINAL),
+            key=lambda item: item.updated,
+        )[-KEEP_FINISHED:]
         pending = sorted(
             (i for i in items.values() if i.state not in FINAL), key=lambda i: i.created
         )
@@ -1653,13 +1752,15 @@ class Dispatcher:
             and not same_socket(bound, self.server)
             and (
                 pending
+                or any(item.state is State.GHOST for item in retained)
                 or live_holds
                 or any(t["state"] in ledger.ACTIVE for t in self.tasks.values())
             )
         ):
             raise WrongServer(
                 f"{self.journal} holds {len(pending)} queued messages and {len(live_holds)} "
-                f"holds for the herdr server at {bound}, but herdr here reaches {self.server}. "
+                f"holds/recoverable ghosts for the herdr server at {bound}, "
+                f"but herdr here reaches {self.server}. "
                 f"Start courier serve where HERDR_SOCKET_PATH is {bound}, or give this server its "
                 "own COURIER_STATE_DIR."
             )
@@ -1685,6 +1786,10 @@ class Dispatcher:
         for item in sorted(items.values(), key=lambda i: i.created):
             if item.target in self.hold_missing and item.session:
                 self.seen[item.target] = item.session
+        for item in retained:
+            if item.state in (State.GHOST, State.REJECTED):
+                self.items[item.id] = item
+                self._record(item, item.reason, full=True)
         for item in pending:
             item.retry_at = 0.0
             item.updated = time.time()

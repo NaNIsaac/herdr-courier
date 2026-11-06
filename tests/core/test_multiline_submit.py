@@ -64,7 +64,7 @@ def test_retry_is_bounded_when_enter_still_does_not_take(pending, run, herdr, mo
     pane, dispatcher, item, keys = pending
     monkeypatch.setattr(herdr, "enter", keys.append)
     run(dispatcher, 60)
-    assert item.state is State.FAILED
+    assert item.state is State.GHOST
     assert "one Enter retry" in item.reason
     assert pane.box == item.text
     assert pane.submit_calls == 1
@@ -99,7 +99,7 @@ def test_retry_never_submits_a_human_edit_or_changed_target(pending, run, change
     assert pane.box == original
     assert pane.submit_calls == 1
     if change == "working":
-        assert item.state is State.FAILED
+        assert item.state is State.GHOST
 
 
 def test_hold_arriving_during_retry_observation_is_honoured(
@@ -118,7 +118,7 @@ def test_hold_arriving_during_retry_observation_is_honoured(
 
     monkeypatch.setattr(herdr, "agent_get", get)
     run(dispatcher, 15)
-    assert item.state is State.FAILED
+    assert item.state is State.GHOST
     assert not keys
 
 

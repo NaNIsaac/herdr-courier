@@ -190,7 +190,7 @@ def cmd_send(args: argparse.Namespace) -> int:
             print(f"{len(files)} file(s) in {folder}")
         return 0
     budget = None if args.timeout is None else args.timeout / 1000
-    while item["state"] not in ("sent", "failed", "cancelled"):
+    while item["state"] not in ("sent", "failed", "cancelled", "rejected", "ghost"):
         left = 60.0 if budget is None else budget - (time.monotonic() - started)
         if left <= 0:
             print(f"timeout: {item['id']} is {item['state']}: {item['reason']}", file=sys.stderr)
@@ -571,6 +571,12 @@ def cmd_cancel(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_submit(args: argparse.Namespace) -> int:
+    item = call("POST", "submit", on_server({"target": args.target}), timeout=15)["item"]
+    print(f"{item['state']} {item['id']}: {item['reason']}")
+    return EXIT_FAILED if item["state"] in ("failed", "rejected", "ghost") else 0
+
+
 def task_list(root: Path | None = None) -> tuple[list[dict], str, int]:
     try:
         tasks = request("GET", "await/list")["tasks"]
@@ -731,6 +737,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--recent", type=int, default=10, help="finished items to show")
     p.add_argument("--width", type=int, help="line width (default: the terminal, 62 if unknown)")
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("submit", help="guarded Enter for an exact retained courier message")
+    p.add_argument("target")
+    p.set_defaults(func=cmd_submit)
 
     p = sub.add_parser("hold", help="keep the dispatcher from writing into a pane")
     p.add_argument("target")

@@ -107,7 +107,8 @@ def test_rejected_and_ghost_survive_restart_without_replaying(herdr, clock, tmp_
     run(dispatcher, 15)
     assert item.state is State.GHOST
     rejected = dispatcher.enqueue("w1", "rejected", source="test")
-    dispatcher._finish(rejected, State.REJECTED, "codex_usage_limit")
+    with dispatcher.lock:
+        dispatcher._finish(rejected, State.REJECTED, "codex_usage_limit")
     before = pane.submit_calls
     restored = Dispatcher(herdr, tmp_path / "journal", clock=clock, log=lambda _: None)
     run(restored, 15)

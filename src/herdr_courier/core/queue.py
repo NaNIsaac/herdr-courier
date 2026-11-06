@@ -1309,8 +1309,16 @@ class Dispatcher:
                         key=lambda item: (item.state in IN_FLIGHT, item.updated),
                         reverse=True,
                     )
+                if not items:
+                    raise DispatchError("input does not equal any retained queued courier message")
+                snapshot = (self.herdr.agent_get(pane_id), self.herdr.read_ansi(pane_id, lines=256))
                 item = next(
-                    (item for item in items if matches(self._read(item).line, item.text)), None
+                    (
+                        item
+                        for item in items
+                        if matches(self._read(item, snapshot=snapshot).line, item.text)
+                    ),
+                    None,
                 )
                 if item is None:
                     raise DispatchError("input does not equal any retained queued courier message")
@@ -1327,12 +1335,15 @@ class Dispatcher:
                     if self._submit_requests.get(pane_id) is future:
                         del self._submit_requests[pane_id]
 
-    def _read(self, item: Item) -> Observation:
-        agent = self.herdr.agent_get(item.pane_id)
-        lines = min(256, max(12, item.text.count("\n") + 7))
-        screen = self.herdr.read_ansi(item.pane_id, lines=lines)
+    def _read(self, item: Item, *, snapshot: tuple[dict, str] | None = None) -> Observation:
+        if snapshot is None:
+            agent = self.herdr.agent_get(item.pane_id)
+            lines = min(256, max(12, item.text.count("\n") + 7))
+            screen = self.herdr.read_ansi(item.pane_id, lines=lines)
+        else:
+            agent, screen = snapshot
         line = classify(screen, queued=item.text)
-        if line.state is LineState.UNKNOWN:
+        if line.state is LineState.UNKNOWN and snapshot is None:
             screen = self.herdr.read_ansi(item.pane_id, lines=256)
             line = classify(screen, queued=item.text)
         return Observation(
@@ -1599,12 +1610,12 @@ class Dispatcher:
         self.lock.notify_all()
 
     def _finish(self, item: Item, state: State, reason: str) -> None:
+        self._set(item, state, reason)
         queue = self.queues.get(item.pane_id, [])
         if item.id in queue:
             queue.remove(item.id)
         if (missing := self.missing.get(item.target)) and item.id in missing.items:
             missing.items.remove(item.id)
-        self._set(item, state, reason)
         finished = [i for i in self.items.values() if i.state in FINAL]
         for old in sorted(finished, key=lambda i: i.updated)[:-KEEP_FINISHED]:
             del self.items[old.id]
@@ -1765,6 +1776,13 @@ class Dispatcher:
         for item in sorted(items.values(), key=lambda i: i.created):
             if item.target in self.hold_missing and item.session:
                 self.seen[item.target] = item.session
+        retained = sorted(
+            (item for item in items.values() if item.state in (State.GHOST, State.REJECTED)),
+            key=lambda item: item.updated,
+        )[-KEEP_FINISHED:]
+        for item in retained:
+            self.items[item.id] = item
+            self._record(item, item.reason, full=True)
         for item in pending:
             item.retry_at = 0.0
             item.updated = time.time()

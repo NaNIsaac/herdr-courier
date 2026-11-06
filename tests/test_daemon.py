@@ -17,6 +17,7 @@ from herdr_courier.state import endpoint_path, journal_path, lock_path
 def test_submit_endpoint_does_not_accept_arbitrary_text(herdr, start):
     pane = herdr.add("w1", box="human draft", terminal="term")
     server, service = start(herdr)
+    assert call(server, "POST", "/api/dispatch/submit", {"target": "w1"})[0] == 401
     status, reply = call(
         server,
         "POST",

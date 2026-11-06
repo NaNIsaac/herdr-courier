@@ -118,3 +118,22 @@ def test_submit_cli_calls_daemon_not_raw_herdr(monkeypatch, capsys):
     assert calls[0][0:2] == ("POST", "submit")
     assert calls[0][2]["target"] == "receiver"
     assert "verifying" in capsys.readouterr().out
+
+
+def test_failed_final_journal_write_keeps_item_in_its_queue(
+    herdr, make_dispatcher, run, monkeypatch
+):
+    herdr.add("w1", submit_mode="stuck", terminal="term")
+    dispatcher = make_dispatcher()
+    item = dispatcher.enqueue("w1", "owned text", source="test")
+    run(dispatcher, 2)
+    assert item.state is State.VERIFYING
+
+    def full(entry):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(dispatcher, "_journal", full)
+    with dispatcher.lock, pytest.raises(OSError):
+        dispatcher._finish(item, State.GHOST, "ghost")
+    assert item.state is State.VERIFYING
+    assert item.id in dispatcher.queues["w1"]

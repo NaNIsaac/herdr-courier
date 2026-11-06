@@ -21,6 +21,7 @@ class Observation:
     # herdr's state_change_seq: it moves on a status change too short to be seen between reads.
     state_seq: int | None = None
     terminal: str | None = None
+    rejection: str | None = None
 
     @property
     def state(self) -> tuple[str, int | None]:

@@ -37,7 +37,7 @@ def test_human_messages_go_first_and_merge_only_with_each_other(herdr, make_disp
     d = make_dispatcher()
     a1 = d.enqueue("w1:p1", "agent 1", source="lane")
     a2 = d.enqueue("w1:p1", "agent 2", source="lane")
-    h1 = d.enqueue("w1:p1", "from isaac", source="console", human=True)
+    h1 = d.enqueue("w1:p1", "from owner", source="console", human=True)
     h2 = d.enqueue("w1:p1", "and again", source="console", human=True)
     pane.box = ""
     for _ in range(4):

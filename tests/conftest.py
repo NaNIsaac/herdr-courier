@@ -128,9 +128,9 @@ def clock() -> FakeClock:
 
 @pytest.fixture
 def make_dispatcher(herdr, clock, tmp_path):
-    def make() -> Dispatcher:
+    def make(**kw) -> Dispatcher:
         return Dispatcher(
-            herdr, tmp_path / "journal.jsonl", clock=clock, wall=clock, log=lambda _: None
+            herdr, tmp_path / "journal.jsonl", clock=clock, wall=clock, log=lambda _: None, **kw
         )
 
     return make
@@ -157,7 +157,7 @@ def start(tmp_path, monkeypatch):
     monkeypatch.setattr("herdr_courier.core.gate.DEBOUNCE", 0.1)
     running = []
 
-    def go(herdr, *, enabled=True, tick=0.05, server=None, mailbox=False):
+    def go(herdr, *, enabled=True, tick=0.05, server=None, mailbox=False, merge_chars=6000):
         dispatcher = (
             Dispatcher(
                 herdr,
@@ -165,6 +165,7 @@ def start(tmp_path, monkeypatch):
                 log=lambda _: None,
                 server=server,
                 routes_in=tmp_path,
+                merge_chars=merge_chars,
             )
             if enabled
             else None

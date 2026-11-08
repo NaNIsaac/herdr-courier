@@ -37,7 +37,7 @@ def test_clearing_the_route_sends_to_the_name_again(herdr, routed, run, tmp_path
     boss = herdr.add("w1:p1", "boss")
     deputy = herdr.add("w1:p2", "boss-deputy")
     routes.save(tmp_path, {"boss": "boss-deputy"})
-    d = routed()
+    d = routed(merge_chars=0)
     assert d.enqueue("boss", "one", source="lane").pane_id == "w1:p2"
     d.set_route("boss", None, sender_pane="")
     item = d.enqueue("boss", "two", source="lane")
@@ -106,7 +106,7 @@ def test_turning_a_route_on_moves_queued_messages_but_not_one_in_flight(
 ):
     boss = herdr.add("w1:p1", "boss")
     deputy = herdr.add("w1:p2", "boss-deputy", session="d1")
-    d = routed()
+    d = routed(merge_chars=0)
     d.hold("boss", owner="test", reason="out of limit", ttl=None)
     first = d.enqueue("boss", "one", source="lane")
     d.enqueue("boss", "two", source="icc")

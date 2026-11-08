@@ -48,7 +48,15 @@ The existing flat journal and API records retain their field names and order thr
 | `ghost` | Courier text remains after one Enter retry, or an exact/safe retry cannot be proved. Final; text is left in place. |
 
 The worker is the only pane writer. Ordinary traffic is FIFO per pane; human priority, routing
-and release of held traffic can affect ordering. A message waiting for a missing receiver
+and release of held traffic can affect ordering. One write can carry several messages: when the
+head passes the gate, the items queued right behind it that share its human flag, session and
+terminal, are not backing off, are not slash commands and keep the text within `merge_chars`
+are journalled `submitting` with it and submitted as one text, each under a
+`--- <id> from <source> at HH:MM ---` line. The first item that does not qualify ends the run, so
+order is kept, and a slash command at the head goes alone. Verification observes that merged
+text; the riders take the head's final state, and a known pre-write rejection returns them to
+`waiting`. A ghost head keeps its rider list in the journal, so a guarded manual submit after a
+restart ends them too. A message waiting for a missing receiver
 may have an empty pane identifier and a wall-clock hold deadline. Known missing receivers
 are looked up periodically; release depends on the captured session. Changed identity normally
 fails, but configured missing-receiver holds and route fallback can keep an unsent item waiting.

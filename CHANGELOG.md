@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Messages waiting for the same ready pane go in one prompt, oldest first, each under a
+  `--- <id> from <sender> at HH:MM ---` line, up to `delivery.merge_chars` (6000) characters.
+  Slash commands go alone, human messages merge only with each other, and each message keeps
+  its id, state and mailbox row. `merge_chars = 0` types each one alone.
+
 - Add `ppw where NAME` to show a tab, pane label and pane id by exact agent name,
   pane label or service label suffix. `--focus` focuses an agent pane, or a service's
   tab when no agent runs there. Ambiguous names never change focus.

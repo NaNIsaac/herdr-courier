@@ -139,9 +139,21 @@ refusing or failing:
    outlasts courier's own measured write-to-`working` time (p95 0.96 s, max 1.69 s over 400 sends)
    plus Ovis' fixed 0.42 s of waits. Without Ovis, or for other agents, nothing changes.
 
-Right before writing, the item is journalled as `submitting` while the queue lock is held. From
-then on it is never written again: a cancel is refused, and if the process dies the next start
-replays it as failed ("delivery unknown") instead of queuing it. Holds are journalled too and
+When the pane is ready and more messages wait behind the first, they go with it as one prompt,
+oldest first, so an agent that was busy gets one turn instead of one per message. Each part
+starts with the header line `courier inbox` uses, `--- <id> from <sender> at HH:MM ---`; a single
+message still goes as typed. The prompt stays within `delivery.merge_chars` (6000 characters) and
+the rest go next time; a first message longer than that goes alone. A slash command such as
+`/compact` always goes alone, human messages (which are ahead of agent ones) are merged only with
+each other, and a message bound to another session or terminal, or backing off after a refused
+write, stops the merge there, so the order never changes. The messages that rode along end in the
+first one's state (`with <id>: ...`). With the mailbox on, each keeps its own row, so
+`courier inbox --ack <id>` still works per message. `merge_chars = 0` types each one alone.
+
+Right before writing, the item is journalled as `submitting` while the queue lock is held, and so
+is every message going with it. From then on none of them is written again: a cancel is refused,
+and if the process dies the next start replays them as failed ("delivery unknown") instead of
+queuing them. A write that herdr refused before typing puts the others back in line. Holds are journalled too and
 come back after a restart, marked as restored in `courier status`.
 
 After writing, a working state, an empty box or the queued-messages placeholder within 5 s

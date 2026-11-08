@@ -62,6 +62,11 @@ class Hold:
 
 
 @dataclass(frozen=True)
+class Delivery:
+    merge_chars: int = field(default=defaults.DELIVERY_MERGE_CHARS, metadata={"max": 100_000})
+
+
+@dataclass(frozen=True)
 class Files:
     inbox: str = defaults.FILES_INBOX
 
@@ -91,6 +96,7 @@ class Config:
     mailbox: Mailbox = Mailbox()
     hold: Hold = Hold()
     ledger: Ledger = Ledger()
+    delivery: Delivery = Delivery()
     files: Files = Files()
     human: Human = Human()
     questions: Questions = field(default_factory=Questions)
@@ -104,6 +110,7 @@ SECTIONS = {
     "mailbox": Mailbox,
     "hold": Hold,
     "ledger": Ledger,
+    "delivery": Delivery,
     "files": Files,
     "human": Human,
     "questions": Questions,
@@ -189,6 +196,10 @@ def _section(path: Path, name: str, cls: type, table: Any):
             ):
                 raise ConfigError(f"{path}: {name}.{key} must be a number of seconds below {high}")
             value = float(value)
+        elif known[key].type is int:
+            high = known[key].metadata["max"]
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= high:
+                raise ConfigError(f"{path}: {name}.{key} must be a whole number from 0 to {high}")
         elif known[key].type == dict[str, str]:
             if not isinstance(value, dict) or not all(
                 isinstance(k, str) and isinstance(v, str) and k and v for k, v in value.items()

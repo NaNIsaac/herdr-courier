@@ -261,6 +261,22 @@ $ courier release reviewer
 released w1:p61
 ```
 
+Messages that waited for the same pane go in as one prompt once it is ready, oldest first, each
+under its own header line, so the agent gets one turn for all of them:
+
+```text
+--- 6f555376a5 from lane at 14:02 ---
+[lane] tests pass, PR opened
+
+--- 0b1d7c94e2 from design at 14:05 ---
+[design] mockup ready for review
+```
+
+A single message goes as typed. A slash command such as `/compact` always goes alone, human
+messages are merged only with each other, and a prompt holds at most `delivery.merge_chars`
+characters; the rest go next time. Each message keeps its id: `courier status`, `courier cancel`
+before the write and `courier inbox --ack <id>` still work per message.
+
 Check that everything is alive:
 
 ```text
@@ -474,6 +490,7 @@ keys you change. An unknown key or a wrong type is an error, which `courier doct
 | `ovis.settle` | `3.0` | seconds the agent state must stay unchanged after a turn before such a message goes |
 | `mailbox.write` | `false` | the daemon also keeps a mailbox copy of every queued message |
 | `mailbox.readers` | `[]` | agents whose `courier inbox --hook` returns their open messages |
+| `delivery.merge_chars` | `6000` | messages waiting for one ready pane go in one prompt up to this size; `0` types each alone |
 | `files.inbox` | `""` | where `courier send --file` copies files on this PC; `""` is `inbox/` in the state directory |
 
 ## How it works

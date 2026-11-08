@@ -141,6 +141,16 @@ def _hhmm(wall: float) -> str:
     return time.strftime("%H:%M", time.localtime(wall))
 
 
+def _command(text: str) -> bool:
+    """A slash command such as /compact, which the agent reads only as the whole prompt."""
+    return text.lstrip().startswith("/")
+
+
+def _framed(item: "Item") -> str:
+    """``item`` as one part of a merged prompt, with the header line `courier inbox` uses."""
+    return f"--- {item.id} from {item.source} at {_hhmm(item.created)} ---\n{item.text}"
+
+
 @dataclass
 class Hold:
     owner: str
@@ -193,6 +203,7 @@ class Dispatcher:
         check_execution: bool = defaults.LEDGER_CHECK_EXECUTION,
         membership_field: str = defaults.LEDGER_MEMBERSHIP_FIELD,
         routes_in: Path | None = None,
+        merge_chars: int = defaults.DELIVERY_MERGE_CHARS,
     ) -> None:
         """``settle_for`` maps an agent name to its between-turns settle time, or None (gate).
 
@@ -209,7 +220,11 @@ class Dispatcher:
         route changes only through a request this process can check. A route is taken when a
         message is queued, and again for every undelivered message when it changes; a message
         whose route target is missing or gone goes to the name it was sent to, so turning a
-        route on or off never drops one."""
+        route on or off never drops one.
+
+        When a pane is ready and more messages wait for it, the next ones are typed in with the
+        first as one prompt, each under its own header line, while the prompt stays within
+        ``merge_chars``; 0 types each alone. They end in the first one's state."""
         self.herdr = herdr
         self.journal = journal
         self.clock = clock
@@ -233,6 +248,10 @@ class Dispatcher:
         self._enter_retried: set[str] = set()
         self._submit_requests: dict[str, Future[Item]] = {}
         self._rejections_before: dict[str, str | None] = {}
+        self.merge_chars = merge_chars
+        # For an item typed in with others: the merged prompt, and the ids that rode with it.
+        self._carried: dict[str, str] = {}
+        self._riders: dict[str, list[str]] = {}
         self.queues: dict[str, list[str]] = {}
         self.holds: dict[str, Hold] = {}
         self.watch: dict[str, PaneWatch] = {}
@@ -1181,13 +1200,31 @@ class Dispatcher:
                 self._set(item, State.WAITING, f"{verdict.reason} (at final check)")
                 return
             # Journalled before the write: after a crash from here on the item is replayed as
-            # FAILED and a cancel is refused, so the message can never be written twice.
-            self._set(item, State.SUBMITTING, "writing to the pane")
+            # FAILED and a cancel is refused, so the message can never be written twice. The
+            # same holds for each message typed in with it.
+            riders = self._riders_of(pane_id, item)
+            try:
+                for rider in riders:
+                    self._set(rider, State.SUBMITTING, f"writing to the pane with {item.id}")
+                    self._riders.setdefault(item.id, []).append(rider.id)
+                if riders:
+                    self._carried[item.id] = "\n\n".join(_framed(i) for i in (item, *riders))
+                    self._set(
+                        item,
+                        State.SUBMITTING,
+                        f"writing to the pane with {len(riders)} more",
+                        riders=self._riders[item.id],
+                    )
+                else:
+                    self._set(item, State.SUBMITTING, "writing to the pane")
+            except OSError:
+                self._unmerge(item, f"{item.id} not written: cannot journal")
+                raise
             self._rejections_before[item.id] = final.rejection
             # The next message must see the box empty for a full debounce after this write.
             self.watch.setdefault(pane_id, PaneWatch()).empty_since = None
         try:
-            self.herdr.submit(pane_id, item.text)
+            self.herdr.submit(pane_id, self._text(item))
         except Exception as exc:  # noqa: BLE001 - every failure here must end the item
             with self.lock:
                 item.attempts += 1
@@ -1195,6 +1232,7 @@ class Dispatcher:
                 if code in SUBMIT_RETRYABLE and item.attempts < MAX_ATTEMPTS:
                     item.retry_at = self.clock() + 2.0**item.attempts
                     self._set(item, State.WAITING, f"retry {item.attempts}: {exc}")
+                    self._unmerge(item, f"{item.id} not written: {exc}")
                 else:
                     # Anything else may have written part of the message; resending could
                     # duplicate it, so stop and report.
@@ -1204,16 +1242,61 @@ class Dispatcher:
             item.verify_until = self.clock() + VERIFY_SECONDS
             self._set(item, State.VERIFYING, "submitted, confirming")
 
+    def _text(self, item: Item) -> str:
+        """What is typed for ``item``: its text, or the merged prompt it leads."""
+        return self._carried.get(item.id, item.text)
+
+    def _riders_of(self, pane_id: str, head: Item) -> list[Item]:
+        """The messages queued right behind ``head`` that go in the same prompt (lock held).
+
+        They keep their order, so the first one that cannot go stops the rest: one in flight or
+        backing off, a human message behind agent ones or the reverse, one bound to another
+        receiver, one about to go back to its unrouted name, a slash command, or one past the
+        size limit. A slash command at the head goes alone too."""
+        queue = self.queues.get(pane_id, [])
+        if self.merge_chars <= 0 or _command(head.text) or not queue or queue[0] != head.id:
+            return []
+        now = self.clock()
+        size = len(_framed(head))
+        riders = []
+        for item_id in queue[1:]:
+            item = self.items[item_id]
+            size += 2 + len(_framed(item))
+            if (
+                item.state not in (State.QUEUED, State.WAITING)
+                or item.retry_at > now
+                or item.human != head.human
+                or (item.session, item.terminal) != (head.session, head.terminal)
+                or item.id in self._fallback
+                or _command(item.text)
+                or size > self.merge_chars
+            ):
+                break
+            riders.append(item)
+        return riders
+
+    def _unmerge(self, head: Item, reason: str) -> None:
+        """Put the messages that were to go with ``head`` back in line, unwritten (lock held)."""
+        self._carried.pop(head.id, None)
+        for rider_id in self._riders.pop(head.id, []):
+            rider = self.items[rider_id]
+            try:
+                self._set(rider, State.WAITING, reason)
+            except OSError:
+                # Not written; a restart before the next journal line fails it as in flight.
+                rider.state, rider.reason = State.WAITING, reason
+
     def _verify(self, item: Item, obs: Observation, now: float) -> bool:
+        text = self._text(item)
         if obs.rejection and obs.rejection != self._rejections_before.get(item.id):
             self._finish(item, State.REJECTED, obs.rejection)
-        elif matches(obs.line, item.text):
+        elif matches(obs.line, text):
             if now < item.verify_until:
                 return False
             if item.id not in self._enter_retried:
                 return True
             self._finish(item, State.GHOST, "ghost: text remains after one Enter retry")
-        elif holds(obs.line, item.text):
+        elif holds(obs.line, text):
             if now >= item.verify_until:
                 self._finish(item, State.GHOST, "ghost: edited text remains in the input box")
         elif obs.status in ("working", "blocked"):
@@ -1240,7 +1323,7 @@ class Dispatcher:
                 if manual:
                     raise DispatchError(final.rejection)
                 return
-            if not matches(final.line, item.text):
+            if not matches(final.line, self._text(item)):
                 if manual:
                     raise DispatchError("input no longer equals the complete queued message")
                 self._verify(item, final, self.clock())
@@ -1316,7 +1399,7 @@ class Dispatcher:
                     (
                         item
                         for item in items
-                        if matches(self._read(item, snapshot=snapshot).line, item.text)
+                        if matches(self._read(item, snapshot=snapshot).line, self._text(item))
                     ),
                     None,
                 )
@@ -1336,20 +1419,21 @@ class Dispatcher:
                         del self._submit_requests[pane_id]
 
     def _read(self, item: Item, *, snapshot: tuple[dict, str] | None = None) -> Observation:
+        text = self._text(item)
         if snapshot is None:
             agent = self.herdr.agent_get(item.pane_id)
-            lines = min(256, max(12, item.text.count("\n") + 7))
+            lines = min(256, max(12, text.count("\n") + 7))
             screen = self.herdr.read_ansi(item.pane_id, lines=lines)
         else:
             agent, screen = snapshot
-        line = classify(screen, queued=item.text)
+        line = classify(screen, queued=text)
         if (
             snapshot is None
             and lines < 256
             and (line.state is LineState.UNKNOWN or rejection(screen))
         ):
             screen = self.herdr.read_ansi(item.pane_id, lines=256)
-            line = classify(screen, queued=item.text)
+            line = classify(screen, queued=text)
         return Observation(
             status=agent.get("agent_status", "unknown"),
             session=(agent.get("agent_session") or {}).get("value"),
@@ -1620,11 +1704,17 @@ class Dispatcher:
             queue.remove(item.id)
         if (missing := self.missing.get(item.target)) and item.id in missing.items:
             missing.items.remove(item.id)
+        # Kept after the end: a ghost can still be submitted by hand, and its riders end again.
+        for rider_id in self._riders.get(item.id, ()):
+            if (rider := self.items.get(rider_id)) is not None:
+                self._finish(rider, state, f"with {item.id}: {reason}")
         finished = [i for i in self.items.values() if i.state in FINAL]
         for old in sorted(finished, key=lambda i: i.updated)[:-KEEP_FINISHED]:
             del self.items[old.id]
             self._enter_retried.discard(old.id)
             self._rejections_before.pop(old.id, None)
+            self._carried.pop(old.id, None)
+            self._riders.pop(old.id, None)
 
     def _record(
         self, item: Item, reason: str, *, full: bool = False, task: dict | None = None
@@ -1643,6 +1733,8 @@ class Dispatcher:
                 del entry["item"]["routed_from"]
         if item.id in self._enter_retried:
             entry["enter_retried"] = True
+        if item.id in self._riders:
+            entry["riders"] = self._riders[item.id]
         if task is not None:
             entry["task"] = task
         self._journal(entry)
@@ -1697,6 +1789,7 @@ class Dispatcher:
             return
         items: dict[str, Item] = {}
         holds: dict[str, dict[str, Any]] = {}
+        riders: dict[str, list[str]] = {}
         bound: str | None = None
         for entry in ledger.history(self.journal):
             ledger.apply(self.tasks, entry)
@@ -1733,6 +1826,8 @@ class Dispatcher:
                             setattr(item, key, entry[key])
             if entry.get("event") == "item" and entry.get("enter_retried"):
                 self._enter_retried.add(entry["id"])
+            if entry.get("event") == "item" and "riders" in entry:
+                riders[entry["id"]] = entry["riders"]
         retained = sorted(
             (item for item in items.values() if item.state in FINAL),
             key=lambda item: item.updated,
@@ -1786,10 +1881,19 @@ class Dispatcher:
         for item in sorted(items.values(), key=lambda i: i.created):
             if item.target in self.hold_missing and item.session:
                 self.seen[item.target] = item.session
-        for item in retained:
-            if item.state in (State.GHOST, State.REJECTED):
-                self.items[item.id] = item
-                self._record(item, item.reason, full=True)
+        kept = [item for item in retained if item.state in (State.GHOST, State.REJECTED)]
+        for item in kept:
+            self.items[item.id] = item
+        for item in kept:
+            # A ghost of a merged prompt can still be submitted by hand; its riders must be here.
+            ids = riders.get(item.id, [])
+            if item.state is State.GHOST and ids and all(i in self.items for i in ids):
+                self._riders[item.id] = ids
+                self._carried[item.id] = "\n\n".join(
+                    _framed(i) for i in (item, *(self.items[r] for r in ids))
+                )
+        for item in kept:
+            self._record(item, item.reason, full=True)
         for item in pending:
             item.retry_at = 0.0
             item.updated = time.time()

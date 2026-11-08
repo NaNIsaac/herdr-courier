@@ -106,6 +106,9 @@ The result may still be verifying; check status again for confirmation.
 
 New `ghost` and `rejected` outcomes are final unsuccessful deliveries, not successful receipt.
 Automatic Enter recovery is bounded to one attempt. See [delivery safety](docs/SPEC.md).
+Each ghost is reported once to the notice receiver (the controller for a ghost in the notice
+receiver's own box), so someone clears the box before a person types into it. A message ending
+in a backslash is refused, since Claude Code reads a backslash before Enter as a line break.
 Upgrade/restart serve together with the client; the older 0.2.0 process lacks this endpoint.
 
 ### Durable task dispatch

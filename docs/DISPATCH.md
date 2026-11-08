@@ -167,6 +167,15 @@ confirms delivery, and the next message to that pane waits a full debounce again
 nothing was written (`agent_blocked`, `agent_not_ready`) are retried, at most 5 times with
 backoff. Any other failure during the write fails the item.
 
+A message that ends in a ghost may still sit in the receiver's input box, and whoever types there
+next, also through another program such as Ovis, sends it along with their own words. courier
+tells the notice receiver (`ledger.notify_to`, else secretary) once per message, or the
+controller when the ghost is in the notice receiver's own box:
+`courier: <id> for <name> (<pane>) was left unsent in its input box (...). Clear that box before
+anyone types there.` It does not clear the box itself. A message whose last character is a
+backslash is refused at `courier send`: Claude Code takes a backslash before Enter as a line
+break, so such a message would always be left in the box.
+
 `courier send` gives each request a random `client_id`. If the reply is lost, `courier` retries
 once with the same id and gets the first item back instead of queuing the message twice.
 

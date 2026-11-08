@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- A ghost is reported once to the notice receiver, or to the controller when the ghost is in the
+  notice receiver's box, so its text is cleared before someone types into that box and sends
+  both. `courier send` refuses a message ending in a backslash, which Claude Code takes as a
+  line break and leaves unsent.
+
 - Messages waiting for the same ready pane go in one prompt, oldest first, each under a
   `--- <id> from <sender> at HH:MM ---` line, up to `delivery.merge_chars` (6000) characters.
   Slash commands go alone, human messages merge only with each other, and each message keeps

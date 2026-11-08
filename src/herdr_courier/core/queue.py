@@ -252,6 +252,9 @@ class Dispatcher:
         # For an item typed in with others: the merged prompt, and the ids that rode with it.
         self._carried: dict[str, str] = {}
         self._riders: dict[str, list[str]] = {}
+        # Ghosts not yet reported: their text may still sit in a box a person types into.
+        self._ghosts: list[str] = []
+        self._ghosted: set[str] = set()
         self.queues: dict[str, list[str]] = {}
         self.holds: dict[str, Hold] = {}
         self.watch: dict[str, PaneWatch] = {}
@@ -288,6 +291,13 @@ class Dispatcher:
         the client chose, so files it copied for the message sit under the message's id."""
         if not text.strip():
             raise DispatchError("empty message")
+        if text.rstrip().endswith("\\"):
+            # Claude Code reads a backslash before Enter as a line break: the message would stay
+            # in the box unsent, where the next person typing there would send it with theirs.
+            raise DispatchError(
+                "message ends with a backslash, which the agent's input box takes as a line "
+                "break instead of sending; end it with another character"
+            )
         if client_id and (known := self._by_client_id(client_id)):
             return known
         if item_id is not None and item_id in self.items:
@@ -1019,6 +1029,31 @@ class Dispatcher:
             except Exception as exc:  # noqa: BLE001 - one bad pane must not stop the others
                 with self.lock:
                     self._stall(item, f"dispatcher error: {exc!r}")
+        if self._ghosts:
+            self._report_ghosts()
+
+    def _report_ghosts(self) -> None:
+        """Tell someone other than the receiver that courier text was left in its input box.
+
+        Anyone typing there next, also through another program, would send it along with their
+        own words. Each ghost is reported once; a ghost that comes back after a restart is not."""
+        with self.lock:
+            ghosts = [self.items[i] for i in self._ghosts if i in self.items]
+            self._ghosts.clear()
+        for item in ghosts:
+            names = {item.target, item.routed_from}
+            to = next((n for n in (self.notify_to, self.controller) if n not in names), None)
+            text = (
+                f"courier: {item.id} for {item.target} ({item.pane_id}) was left unsent in its "
+                f"input box ({item.reason}). Clear that box before anyone types there."
+            )
+            if to is None:
+                self.log(text)
+                continue
+            try:
+                self.enqueue(to, text, source="courier", hold=False)
+            except DispatchError as exc:
+                self.log(f"{text} Not queued for {to}: {exc}")
 
     def _look_for_missing(self) -> None:
         now = self.clock()
@@ -1699,6 +1734,10 @@ class Dispatcher:
 
     def _finish(self, item: Item, state: State, reason: str) -> None:
         self._set(item, state, reason)
+        # A rider's text is part of its head's, which is reported for both.
+        if state is State.GHOST and item.id not in self._ghosted and not reason.startswith("with "):
+            self._ghosted.add(item.id)
+            self._ghosts.append(item.id)
         queue = self.queues.get(item.pane_id, [])
         if item.id in queue:
             queue.remove(item.id)
@@ -1714,6 +1753,7 @@ class Dispatcher:
             self._enter_retried.discard(old.id)
             self._rejections_before.pop(old.id, None)
             self._carried.pop(old.id, None)
+            self._ghosted.discard(old.id)
             self._riders.pop(old.id, None)
 
     def _record(
@@ -1884,6 +1924,8 @@ class Dispatcher:
         kept = [item for item in retained if item.state in (State.GHOST, State.REJECTED)]
         for item in kept:
             self.items[item.id] = item
+            if item.state is State.GHOST:
+                self._ghosted.add(item.id)
         for item in kept:
             # A ghost of a merged prompt can still be submitted by hand; its riders must be here.
             ids = riders.get(item.id, [])

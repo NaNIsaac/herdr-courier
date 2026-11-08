@@ -95,8 +95,33 @@ def on_server(body: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
+def own_pane() -> str:
+    """The herdr pane this command runs in, or "" outside herdr.
+
+    Codex runs the commands of every Codex pane in one app-server, started from the first of them,
+    so HERDR_PANE_ID there names that first pane. CODEX_THREAD_ID names the calling session, and
+    herdr lists each Codex pane with its session.
+    """
+    pane = os.environ.get("HERDR_PANE_ID", "")
+    thread = os.environ.get("CODEX_THREAD_ID")
+    if not thread:
+        return pane
+    try:
+        listed = CliHerdr().agent_list()
+    except HerdrError:
+        return pane
+    return next(
+        (
+            a["pane_id"]
+            for a in listed
+            if a.get("pane_id") and (a.get("agent_session") or {}).get("value") == thread
+        ),
+        pane,
+    )
+
+
 def default_source() -> str:
-    return os.environ.get("COURIER_SOURCE") or os.environ.get("HERDR_PANE_ID") or "unknown"
+    return os.environ.get("COURIER_SOURCE") or own_pane() or "unknown"
 
 
 def cmd_send(args: argparse.Namespace) -> int:
@@ -111,7 +136,7 @@ def cmd_send(args: argparse.Namespace) -> int:
         {
             "target": args.target,
             "text": args.text,
-            "source": args.source,
+            "source": args.source or default_source(),
             "human": args.human,
             # Lets a retry after a lost reply find the first request instead of queuing twice.
             "client_id": uuid.uuid4().hex,
@@ -121,7 +146,7 @@ def cmd_send(args: argparse.Namespace) -> int:
         try:
             body["task"] = ledger.new(
                 args.await_key,
-                args.source,
+                body["source"],
                 args.target,
                 args.evidence,
                 due=args.due,
@@ -305,7 +330,12 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 def cmd_hold(args: argparse.Namespace) -> int:
     body = on_server(
-        {"target": args.target, "owner": args.owner, "reason": args.reason, "ttl": args.ttl}
+        {
+            "target": args.target,
+            "owner": args.owner or default_source(),
+            "reason": args.reason,
+            "ttl": args.ttl,
+        }
     )
     pane = call("POST", "hold", body)["pane_id"]
     print(
@@ -393,7 +423,7 @@ def cmd_route(args: argparse.Namespace) -> int:
             {
                 "name": args.name,
                 "to": None if args.clear else args.to,
-                "sender_pane": os.environ.get("HERDR_PANE_ID", ""),
+                "sender_pane": own_pane(),
             }
         )
         before = call("GET", "status")["status"].get("routes") or {}
@@ -475,7 +505,7 @@ def cmd_panes(args: argparse.Namespace) -> int:
 
 def own_name() -> str | None:
     """The herdr agent name of the calling pane, as role-brief finds it."""
-    pane = os.environ.get("HERDR_PANE_ID")
+    pane = own_pane()
     if not pane:
         return None
     try:
@@ -613,7 +643,7 @@ def cmd_await(args: argparse.Namespace) -> int:
             on_server(
                 {
                     "key": args.key,
-                    "sender_pane": os.environ.get("HERDR_PANE_ID", ""),
+                    "sender_pane": own_pane(),
                 }
             ),
         )
@@ -627,7 +657,7 @@ def cmd_await(args: argparse.Namespace) -> int:
                 {
                     "key": args.key,
                     "to": args.to,
-                    "sender_pane": os.environ.get("HERDR_PANE_ID", ""),
+                    "sender_pane": own_pane(),
                     "force": args.force,
                     "reason": args.reason,
                 }
@@ -682,7 +712,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--wait", action="store_true", help="wait for delivery, then for the agent")
     p.add_argument("--until", action="append", metavar="STATUS", help="passed to herdr agent wait")
     p.add_argument("--timeout", type=int, metavar="MS", help="total budget for --wait")
-    p.add_argument("--source", default=default_source(), help="who is sending (default: pane)")
+    p.add_argument("--source", help="who is sending (default: pane)")
     p.add_argument("--human", action="store_true", help="put ahead of queued agent messages")
     p.add_argument("--json", action="store_true", help="print the queue receipt as JSON")
     p.add_argument("--await", dest="await_key")
@@ -746,7 +776,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("target")
     p.add_argument("--ttl", type=float, metavar="SECONDS", help="expire automatically")
     p.add_argument("--reason", default="")
-    p.add_argument("--owner", default=default_source())
+    p.add_argument("--owner", help="who holds it (default: pane)")
     p.set_defaults(func=cmd_hold)
 
     p = sub.add_parser("release", help="drop a hold")

@@ -69,6 +69,13 @@ summary_to = { boss = "secretary", secretary = "boss" }
 ttl = 14400.0
 summary_every = 900.0
 
+[delivery]
+# When a pane is ready and several messages wait for it, they go in one prompt, oldest first, each
+# under a "--- <id> from <sender> at HH:MM ---" line, up to this many characters; the rest go next
+# time. A slash command always goes alone, and human messages are merged only with each other.
+# 0 types every message alone.
+merge_chars = 6000
+
 [files]
 # courier send --file copies each file to <inbox>/YYYYMMDD-HHMMSS-<message id>/ on this PC and
 # names that copy in the message. "" is the inbox folder in the state directory; ~ and environment

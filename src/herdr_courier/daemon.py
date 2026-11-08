@@ -521,6 +521,7 @@ def serve(args: argparse.Namespace) -> int:
             check_execution=config.ledger.check_execution,
             membership_field=config.ledger.membership_field,
             routes_in=root,
+            merge_chars=config.delivery.merge_chars,
         )
     except (HerdrError, WrongServer) as exc:
         lock.release()

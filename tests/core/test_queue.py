@@ -139,7 +139,7 @@ def test_uncertain_submit_error_is_not_retried(herdr, make_dispatcher, run):
 def test_fifo_per_pane_and_panes_are_independent(herdr, make_dispatcher, run):
     a = herdr.add("w1:pA", box="isaac is typing here")
     b = herdr.add("w1:pB")
-    d = make_dispatcher()
+    d = make_dispatcher(merge_chars=0)
     d.enqueue("w1:pA", "to A", source="t")
     d.enqueue("w1:pB", "first to B", source="t")
     d.enqueue("w1:pB", "second to B", source="t")
@@ -152,7 +152,7 @@ def test_fifo_per_pane_and_panes_are_independent(herdr, make_dispatcher, run):
 
 def test_human_message_goes_ahead_of_agent_messages(herdr, make_dispatcher, run):
     pane = herdr.add("w1:p1", box="x")
-    d = make_dispatcher()
+    d = make_dispatcher(merge_chars=0)
     d.enqueue("w1:p1", "agent 1", source="lane")
     d.enqueue("w1:p1", "agent 2", source="lane")
     d.enqueue("w1:p1", "from isaac", source="console", human=True)
@@ -467,7 +467,7 @@ def test_back_to_back_messages_each_wait_a_full_debounce(herdr, clock, make_disp
         pane.status = "idle"
 
     herdr.submit = timed
-    d = make_dispatcher()
+    d = make_dispatcher(merge_chars=0)
     d.enqueue("w1:p1", "first", source="t")
     d.enqueue("w1:p1", "second", source="t")
     run(d, 10)

@@ -483,7 +483,7 @@ def test_cli_works_from_any_directory_and_refuses_another_server(
     herdr, start, tmp_path, monkeypatch, capsys
 ):
     pane = herdr.add("w1:p1", "boss")
-    start(herdr, server=A_SOCK)
+    start(herdr, server=A_SOCK, merge_chars=0)
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)

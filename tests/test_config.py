@@ -27,6 +27,12 @@ def test_file_overrides_only_what_it_sets(state_dir):
     assert loaded.doctor == config.Doctor()
 
 
+def test_merge_chars_zero_turns_merging_off(state_dir):
+    assert config.load().delivery.merge_chars == defaults.DELIVERY_MERGE_CHARS
+    (state_dir / "config.toml").write_text("[delivery]\nmerge_chars = 0\n", encoding="utf-8")
+    assert config.load().delivery == config.Delivery(merge_chars=0)
+
+
 def test_settle_takes_whole_seconds(state_dir):
     (state_dir / "config.toml").write_text(
         '[ovis]\npanes = ["boss"]\nsettle = 5\n', encoding="utf-8"
@@ -50,6 +56,9 @@ def test_settle_takes_whole_seconds(state_dir):
         ("[hold]\nttl = 604800\n", "hold.ttl must be a number of seconds below 604800"),
         ('[hold]\nsummary_to = ["boss"]\n', "hold.summary_to must be a table of names"),
         ('[hold]\nsummary_to = { boss = "" }\n', "hold.summary_to must be a table of names"),
+        ("[delivery]\nmerge_chars = -1\n", "delivery.merge_chars must be a whole number"),
+        ("[delivery]\nmerge_chars = 60.5\n", "delivery.merge_chars must be a whole number"),
+        ("[delivery]\nmerge_chars = true\n", "delivery.merge_chars must be a whole number"),
     ],
 )
 def test_bad_file_is_an_error(state_dir, text, expect):

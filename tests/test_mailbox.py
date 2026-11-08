@@ -1,5 +1,6 @@
 import io
 import json
+import time
 
 import pytest
 from conftest import call
@@ -37,6 +38,24 @@ def test_no_copy_while_the_mailbox_is_off(herdr, start, tmp_path):
     server, service = start(herdr)
     send(server, service, "hello")
     assert not mailbox.mailbox_dir(tmp_path).exists()
+
+
+def test_messages_typed_in_as_one_prompt_keep_a_mailbox_row_each(herdr, start, tmp_path, capsys):
+    pane = herdr.add("w1:p1", "boss", box="typing")
+    server, service = start(herdr, mailbox=True)
+    first = send(server, service, "first")
+    second = send(server, service, "second")
+    pane.box = ""
+    deadline = time.monotonic() + 5
+    while not pane.submitted and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert len(pane.submitted) == 1
+    assert f"--- {first['id']} from xr1" in pane.submitted[0]
+    assert f"--- {second['id']} from xr1" in pane.submitted[0]
+    assert [m.id for m in mailbox.load(tmp_path, "boss")] == [first["id"], second["id"]]
+    assert cli.main(["inbox", "boss", "--ack", second["id"]]) == 0
+    capsys.readouterr()
+    assert [m.state for m in mailbox.load(tmp_path, "boss")] == ["new", "done"]
 
 
 class Item:

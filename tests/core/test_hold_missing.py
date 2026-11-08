@@ -21,6 +21,8 @@ def failover(herdr, clock, tmp_path):
             log=lambda _: None,
             hold_missing=("boss", "secretary"),
             summary_to={"boss": "secretary", "secretary": "boss"},
+            # Each message alone, so a test reads the order they were typed in.
+            merge_chars=0,
         )
 
     return make

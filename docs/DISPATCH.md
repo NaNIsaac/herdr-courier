@@ -33,7 +33,7 @@ src/herdr_courier/
   panes.py            courier panes: panes by tab, labels checked against a naming rule
   doctor.py           courier doctor: read-only checks of herdr, courier serve and its neighbours
   ovis.py             whether Ovis answers, and the between-turns rule for `ovis.panes`
-  defaults.py         built-in settings; config.toml in the state directory overrides them
+  defaults.py         built-in settings; config.toml in the state directory, or COURIER_CONFIG, overrides them
   config.py           reads and validates config.toml
   state.py            state directory: journal, lock, endpoint file, config
 ```

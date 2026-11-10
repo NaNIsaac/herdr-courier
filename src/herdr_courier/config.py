@@ -1,5 +1,7 @@
-"""``config.toml`` in the state directory, laid over the built-in values in ``defaults``."""
+"""``config.toml`` in the state directory, or the file ``COURIER_CONFIG`` names, laid over the
+built-in values in ``defaults``."""
 
+import os
 import re
 import tomllib
 from dataclasses import dataclass, field, fields
@@ -117,17 +119,34 @@ SECTIONS = {
 }
 
 
+CONFIG_VARIABLE = "COURIER_CONFIG"
+
+
 def config_path(root: Path | None = None) -> Path:
+    """The file ``COURIER_CONFIG`` names, else ``config.toml`` in ``root`` (the state directory)."""
+    if named := os.environ.get(CONFIG_VARIABLE):
+        return Path(named).expanduser()
     return (root or state_dir()) / "config.toml"
 
 
+def named_by_variable(path: Path) -> bool:
+    named = os.environ.get(CONFIG_VARIABLE)
+    return bool(named) and Path(named).expanduser() == path
+
+
 def load(path: Path | None = None) -> Config:
-    """The settings in ``path`` (default: the state directory's), or the defaults if it is absent."""
+    """The settings in ``path`` (default: ``config_path()``), or the defaults if it is absent.
+
+    A file that ``COURIER_CONFIG`` names must exist: the settings it holds would otherwise be
+    replaced by the defaults without a word.
+    """
     path = path or config_path()
     try:
         with path.open("rb") as f:
             data = tomllib.load(f)
     except FileNotFoundError:
+        if named_by_variable(path):
+            raise ConfigError(f"{path}: not found ({CONFIG_VARIABLE} names it)") from None
         return Config()
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"{path}: {exc}") from exc

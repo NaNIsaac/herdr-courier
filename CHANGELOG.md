@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `COURIER_CONFIG` names the settings file to read instead of `config.toml` in the state
+  directory, so a profile can keep it with its other settings. A file it names must exist, and
+  `courier doctor` shows which file is read.
+
 - A ghost is reported once to the notice receiver, or to the controller when the ghost is in the
   notice receiver's box, so its text is cleared before someone types into that box and sends
   both. `courier send` refuses a message ending in a backslash, which Claude Code takes as a

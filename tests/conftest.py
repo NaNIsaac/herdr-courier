@@ -113,6 +113,7 @@ def state_dir(monkeypatch, tmp_path_factory):
     """Keep every test away from the user's state directory and its config.toml."""
     path = tmp_path_factory.mktemp("state")
     monkeypatch.setenv("COURIER_STATE_DIR", str(path))
+    monkeypatch.delenv("COURIER_CONFIG", raising=False)
     return path
 
 

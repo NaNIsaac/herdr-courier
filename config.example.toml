@@ -1,8 +1,8 @@
 # courier settings. Copy to config.toml in the state directory to change any of them:
 #   Windows  %LOCALAPPDATA%\herdr-courier\config.toml
 #   others   $XDG_STATE_HOME/herdr-courier/config.toml (~/.local/state/herdr-courier/config.toml)
-# COURIER_STATE_DIR moves the whole directory. Keys left out keep the values below, which are the
-# built-in defaults. Unknown keys are an error.
+# COURIER_CONFIG names another file to read instead. COURIER_STATE_DIR moves the whole directory.
+# Keys left out keep the values below, which are the built-in defaults. Unknown keys are an error.
 
 [panes]
 # courier panes checks pane labels against "<prefix><separator><name>".

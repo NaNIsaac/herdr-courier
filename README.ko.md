@@ -309,7 +309,8 @@ herdr agent prompt boss "[lane] status report"
 
 모든 설정에는 내장 기본값이 있습니다. 바꾸려면 [config.example.toml](config.example.toml)을 상태
 폴더의 `config.toml`로 복사하고 바꿀 키만 남깁니다. 모르는 키나 잘못된 타입은 오류이며
-`courier doctor`가 알려 줍니다.
+`courier doctor`가 알려 줍니다. `COURIER_CONFIG`에 다른 파일을 주면 그 파일을 대신 읽습니다.
+다른 개인 설정과 함께 두는 경우에 쓰며, 그 파일은 있어야 합니다.
 
 | 키 | 기본값 | |
 | --- | --- | --- |

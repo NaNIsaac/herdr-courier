@@ -18,7 +18,7 @@ from typing import Any, Protocol
 
 from . import display, ovis
 from .client import LostContact, Refused, Unavailable, request
-from .config import Config, ConfigError, Ovis, config_path, load
+from .config import CONFIG_VARIABLE, Config, ConfigError, Ovis, config_path, load, named_by_variable
 from .core.transport import CliHerdr, HerdrError, same_socket
 from .state import endpoint_path, journal_path, state_dir
 
@@ -286,6 +286,8 @@ def check_config(root: Path, config: Config | None) -> tuple[Check, Config]:
         ), Config()
     if config.path is None:
         return Check("config", Level.OK, "built-in defaults (no config.toml)"), config
+    if named_by_variable(path):
+        return Check("config", Level.OK, f"{path} ({CONFIG_VARIABLE})"), config
     return Check("config", Level.OK, "config.toml in the state directory"), config
 
 

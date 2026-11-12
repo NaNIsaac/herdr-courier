@@ -522,6 +522,7 @@ def serve(args: argparse.Namespace) -> int:
             membership_field=config.ledger.membership_field,
             routes_in=root,
             merge_chars=config.delivery.merge_chars,
+            pointer_for=config.mailbox.readers if config.mailbox.write else (),
         )
     except (HerdrError, WrongServer) as exc:
         lock.release()

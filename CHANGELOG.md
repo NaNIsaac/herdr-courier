@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- With the mailbox on, an agent in `mailbox.readers` gets one line per message in its pane,
+  `[courier] <id> from <sender>: in your mailbox, courier inbox --show <id>`, and its hook adds
+  the text, so the agent no longer gets each message twice. The hook names an id that comes again
+  instead of showing its text twice, and one not filed yet. Slash commands are still typed whole.
+
 - A ghost is reported once to the notice receiver, or to the controller when the ghost is in the
   notice receiver's box, so its text is cleared before someone types into that box and sends
   both. `courier send` refuses a message ending in a backslash, which Claude Code takes as a

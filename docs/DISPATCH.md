@@ -142,7 +142,8 @@ refusing or failing:
 When the pane is ready and more messages wait behind the first, they go with it as one prompt,
 oldest first, so an agent that was busy gets one turn instead of one per message. Each part
 starts with the header line `courier inbox` uses, `--- <id> from <sender> at HH:MM ---`; a single
-message still goes as typed. The prompt stays within `delivery.merge_chars` (6000 characters) and
+message still goes as typed. For a mailbox reader each message is one pointer line instead
+([mailbox.md](mailbox.md#pointer-lines)). The prompt stays within `delivery.merge_chars` (6000 characters) and
 the rest go next time; a first message longer than that goes alone. A slash command such as
 `/compact` always goes alone, human messages (which are ahead of agent ones) are merged only with
 each other, and a message bound to another session or terminal, or backing off after a refused

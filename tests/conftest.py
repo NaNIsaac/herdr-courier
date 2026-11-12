@@ -157,7 +157,16 @@ def start(tmp_path, monkeypatch):
     monkeypatch.setattr("herdr_courier.core.gate.DEBOUNCE", 0.1)
     running = []
 
-    def go(herdr, *, enabled=True, tick=0.05, server=None, mailbox=False, merge_chars=6000):
+    def go(
+        herdr,
+        *,
+        enabled=True,
+        tick=0.05,
+        server=None,
+        mailbox=False,
+        merge_chars=6000,
+        pointer_for=(),
+    ):
         dispatcher = (
             Dispatcher(
                 herdr,
@@ -166,6 +175,7 @@ def start(tmp_path, monkeypatch):
                 server=server,
                 routes_in=tmp_path,
                 merge_chars=merge_chars,
+                pointer_for=pointer_for,
             )
             if enabled
             else None

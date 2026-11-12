@@ -1,6 +1,6 @@
 [project]
 name = "herdr-courier"
-version = "0.2.0"
+version = "0.3.0"
 description = "A prompt queue for herdr panes that never types over a human's half-written input"
 readme = "README.md"
 license = "MIT"

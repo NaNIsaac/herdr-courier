@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - With the mailbox on, an agent in `mailbox.readers` gets one line per message in its pane,
   `[courier] <id> from <sender>: in your mailbox, courier inbox --show <id>`, and its hook adds

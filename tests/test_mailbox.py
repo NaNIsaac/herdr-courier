@@ -70,8 +70,9 @@ def readers(state_dir):
     return state_dir
 
 
-def hook(monkeypatch, capsys, event, source=None, name="boss"):
+def hook(monkeypatch, capsys, event, source=None, name="boss", prompt=None):
     payload = {"hook_event_name": event} | ({"source": source} if source else {})
+    payload |= {"prompt": prompt} if prompt else {}
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
     assert cli.main(["inbox", name, "--hook"]) == 0
     out = capsys.readouterr().out
@@ -126,6 +127,58 @@ def test_hook_cuts_long_text_and_points_to_the_full_one(readers, monkeypatch, ca
     shown = hook(monkeypatch, capsys, "UserPromptSubmit")["additionalContext"]
     assert "courier inbox --show long1" in shown
     assert "x" * (mailbox.HOOK_TEXT_CHARS + 1) not in shown
+
+
+def submitted(pane, count):
+    deadline = time.monotonic() + 5
+    while len(pane.submitted) < count and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return pane.submitted
+
+
+def test_a_reader_gets_one_pointer_line_and_the_hook_brings_the_text_once(
+    herdr, start, tmp_path, monkeypatch, capsys
+):
+    (tmp_path / "config.toml").write_text('[mailbox]\nreaders = ["boss"]\n', encoding="utf-8")
+    pane = herdr.add("w1:p1", "boss")
+    server, service = start(herdr, mailbox=True, pointer_for=("boss",))
+    item = send(server, service, "merge-ready RL#24")
+    line = f"[courier] {item['id']} from xr1: in your mailbox, courier inbox --show {item['id']}"
+    assert submitted(pane, 1) == [line]
+
+    prompt = {"prompt": line}
+    first = hook(monkeypatch, capsys, "UserPromptSubmit", **prompt)["additionalContext"]
+    assert "merge-ready RL#24" in first and "came again" not in first
+    again = hook(monkeypatch, capsys, "UserPromptSubmit", **prompt)["additionalContext"]
+    assert "merge-ready RL#24" not in again
+    assert f"{item['id']} came again and was shown before (read)" in again
+
+
+def test_pointer_lines_merge_into_one_prompt_and_others_keep_their_text(herdr, start, tmp_path):
+    boss = herdr.add("w1:p1", "boss", box="typing")
+    other = herdr.add("w1:p2", "xr2")
+    server, service = start(herdr, mailbox=True, pointer_for=("boss",))
+    first = send(server, service, "first")
+    second = send(server, service, "second")
+    command = send(server, service, "/compact")
+    plain = send(server, service, "for xr2", target="xr2")
+    boss.box = ""
+    lines = [
+        f"[courier] {i} from xr1: in your mailbox, courier inbox --show {i}"
+        for i in (first["id"], second["id"])
+    ]
+    assert submitted(boss, 2) == ["\n".join(lines), "/compact"]
+    assert submitted(other, 1) == ["for xr2"]
+    assert command["id"] and plain["id"]
+
+
+def test_hook_names_a_pointed_message_not_yet_filed(readers, monkeypatch, capsys):
+    monkeypatch.setattr(mailbox, "FILED_WAIT", 0.2)
+    mailbox.add(readers, Item("a1", "first"))
+    prompt = "[courier] 0123456789 from xr1: in your mailbox, courier inbox --show 0123456789"
+    shown = hook(monkeypatch, capsys, "UserPromptSubmit", prompt=prompt)["additionalContext"]
+    assert "first" in shown
+    assert "0123456789 is not in the mailbox yet" in shown
 
 
 def test_inbox_lists_open_messages_and_refuses_unknown_ids(state_dir, capsys):

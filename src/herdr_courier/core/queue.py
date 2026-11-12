@@ -151,6 +151,13 @@ def _framed(item: "Item") -> str:
     return f"--- {item.id} from {item.source} at {_hhmm(item.created)} ---\n{item.text}"
 
 
+def pointer(item: "Item") -> str:
+    """The one line typed for a mailbox reader; its hook puts the text into the context."""
+    return (
+        f"[courier] {item.id} from {item.source}: in your mailbox, courier inbox --show {item.id}"
+    )
+
+
 @dataclass
 class Hold:
     owner: str
@@ -204,6 +211,7 @@ class Dispatcher:
         membership_field: str = defaults.LEDGER_MEMBERSHIP_FIELD,
         routes_in: Path | None = None,
         merge_chars: int = defaults.DELIVERY_MERGE_CHARS,
+        pointer_for: Iterable[str] = (),
     ) -> None:
         """``settle_for`` maps an agent name to its between-turns settle time, or None (gate).
 
@@ -224,7 +232,11 @@ class Dispatcher:
 
         When a pane is ready and more messages wait for it, the next ones are typed in with the
         first as one prompt, each under its own header line, while the prompt stays within
-        ``merge_chars``; 0 types each alone. They end in the first one's state."""
+        ``merge_chars``; 0 types each alone. They end in the first one's state.
+
+        A message for an agent in ``pointer_for`` (mailbox readers, whose hook shows the text from
+        the mailbox) is typed as one ``pointer`` line, so the text reaches the agent once; a slash
+        command is still typed whole."""
         self.herdr = herdr
         self.journal = journal
         self.clock = clock
@@ -249,6 +261,7 @@ class Dispatcher:
         self._submit_requests: dict[str, Future[Item]] = {}
         self._rejections_before: dict[str, str | None] = {}
         self.merge_chars = merge_chars
+        self.pointer_for = frozenset(pointer_for)
         # For an item typed in with others: the merged prompt, and the ids that rode with it.
         self._carried: dict[str, str] = {}
         self._riders: dict[str, list[str]] = {}
@@ -1243,7 +1256,7 @@ class Dispatcher:
                     self._set(rider, State.SUBMITTING, f"writing to the pane with {item.id}")
                     self._riders.setdefault(item.id, []).append(rider.id)
                 if riders:
-                    self._carried[item.id] = "\n\n".join(_framed(i) for i in (item, *riders))
+                    self._carried[item.id] = self._merged((item, *riders))
                     self._set(
                         item,
                         State.SUBMITTING,
@@ -1278,8 +1291,18 @@ class Dispatcher:
             self._set(item, State.VERIFYING, "submitted, confirming")
 
     def _text(self, item: Item) -> str:
-        """What is typed for ``item``: its text, or the merged prompt it leads."""
-        return self._carried.get(item.id, item.text)
+        """What is typed for ``item``: its text or pointer line, or the merged prompt it leads."""
+        if item.id in self._carried:
+            return self._carried[item.id]
+        return pointer(item) if self._pointed(item) else item.text
+
+    def _pointed(self, item: Item) -> bool:
+        return item.target in self.pointer_for and not _command(item.text)
+
+    def _merged(self, items: tuple[Item, ...]) -> str:
+        if all(self._pointed(i) for i in items):
+            return "\n".join(pointer(i) for i in items)
+        return "\n\n".join(pointer(i) if self._pointed(i) else _framed(i) for i in items)
 
     def _riders_of(self, pane_id: str, head: Item) -> list[Item]:
         """The messages queued right behind ``head`` that go in the same prompt (lock held).
@@ -1931,9 +1954,7 @@ class Dispatcher:
             ids = riders.get(item.id, [])
             if item.state is State.GHOST and ids and all(i in self.items for i in ids):
                 self._riders[item.id] = ids
-                self._carried[item.id] = "\n\n".join(
-                    _framed(i) for i in (item, *(self.items[r] for r in ids))
-                )
+                self._carried[item.id] = self._merged((item, *(self.items[r] for r in ids)))
         for item in kept:
             self._record(item, item.reason, full=True)
         for item in pending:

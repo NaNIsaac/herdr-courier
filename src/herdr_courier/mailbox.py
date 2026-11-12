@@ -5,7 +5,8 @@ seen it and finished with it, and survives compaction and restarts because it is
 agent's context. Each target has one append-only JSON Lines file, ``mailbox/<target>.jsonl``:
 courier serve appends a ``message`` record when it queues an item (same id as the journal), and
 the reader appends ``shown`` (a hook put it into the agent's context) and ``done`` (the agent
-acked it). Typing is unchanged. See docs/mailbox.md.
+acked it). A reader's pane gets only a pointer line per message (core.queue.pointer); the hook
+brings the text. See docs/mailbox.md.
 """
 
 import json
@@ -22,6 +23,9 @@ HOOK_TEXT_CHARS = 2000
 HOOK_MESSAGES = 10
 
 _unsafe = re.compile(r"[^a-z0-9._-]")
+_pointed = re.compile(r"^\[courier\] ([0-9a-f]{10}) from ", re.MULTILINE)
+# How long the hook waits for a pointed message that courier serve has not filed yet.
+FILED_WAIT = 2.0
 _lock = threading.RLock()
 
 
@@ -135,21 +139,56 @@ def log_hook(root: Path, line: str) -> None:
         f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} {line}\n")
 
 
+def pointed_ids(prompt: str) -> list[str]:
+    """The ids of the pointer lines courier typed into this prompt, in order."""
+    return list(dict.fromkeys(_pointed.findall(prompt)))
+
+
+def load_with(root: Path, target: str, ids: list[str]) -> list[Message]:
+    """``load``, waiting up to FILED_WAIT seconds for ``ids``: serve files a message just after
+    queueing it, so a pointer can reach the pane a moment before its row."""
+    deadline = time.monotonic() + FILED_WAIT
+    while True:
+        messages = load(root, target)
+        known = {m.id for m in messages}
+        if all(i in known for i in ids) or time.monotonic() >= deadline:
+            return messages
+        time.sleep(0.1)
+
+
 def pending(messages: list[Message], *, again: bool) -> list[Message]:
     """New messages, or with ``again`` (after a compaction) every one not yet done."""
     return [m for m in messages if m.state == "new" or (again and m.state == "read")]
 
 
-def hook_text(target: str, messages: list[Message]) -> str:
+def repeat_notes(messages: list[Message], ids: list[str]) -> list[str]:
+    """One line for each pointed id that is not new: it was handled once, or is not filed."""
+    by_id = {m.id: m for m in messages}
+    notes = []
+    for i in ids:
+        if i not in by_id:
+            notes.append(
+                f"{i} is not in the mailbox yet; read it later with courier inbox --show {i}."
+            )
+        elif by_id[i].state != "new":
+            notes.append(
+                f"{i} came again and was shown before ({by_id[i].state}); do not act on it twice."
+            )
+    return notes
+
+
+def hook_text(target: str, messages: list[Message], notes: Sequence[str] = ()) -> str:
     shown = messages[-HOOK_MESSAGES:]
     head = (
-        f"[courier inbox] {len(messages)} message(s) for {target} not marked done. During the "
-        "mailbox trial the same text is also typed into this pane as before; act on each once. "
+        f"[courier inbox] {len(messages)} message(s) for {target} not marked done. The pane gets "
+        "one [courier] line per message; its text is here. "
         f"When one is handled, run: courier inbox --ack <id>"
     )
     if len(messages) > len(shown):
         head += f"\nOnly the newest {len(shown)} are below; `courier inbox` lists all."
-    parts = [head]
+    parts = [head] if messages else []
+    if notes:
+        parts.append("[courier inbox] " + " ".join(notes))
     for m in shown:
         stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(m.created))
         text = m.text

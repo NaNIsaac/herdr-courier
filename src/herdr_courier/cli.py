@@ -536,12 +536,13 @@ def inbox_hook(root: Path, name: str | None) -> int:
             *resume_for,
         ):
             return 0
-        messages = (
-            mailbox.pending(mailbox.load(root, name), again=event == "SessionStart")
-            if name in readers
-            else []
-        )
-        text = mailbox.hook_text(name, messages) if messages else ""
+        messages, notes = [], []
+        if name in readers:
+            pointed = mailbox.pointed_ids(payload.get("prompt") or "")
+            filed = mailbox.load_with(root, name, pointed)
+            messages = mailbox.pending(filed, again=event == "SessionStart")
+            notes = mailbox.repeat_notes(filed, pointed)
+        text = mailbox.hook_text(name, messages, notes) if messages or notes else ""
         if name in resume_for and event == "SessionStart":
             tasks, banner, _ = task_list(root)
             tasks = [t for t in tasks if name in {t["from"], t["to"]}]

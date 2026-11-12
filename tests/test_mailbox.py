@@ -163,11 +163,11 @@ def test_pointer_lines_merge_into_one_prompt_and_others_keep_their_text(herdr, s
     command = send(server, service, "/compact")
     plain = send(server, service, "for xr2", target="xr2")
     boss.box = ""
-    assert submitted(boss, 2) == [
-        f"[courier] {first['id']} from xr1: in your mailbox, courier inbox --show {first['id']}\n"
-        f"[courier] {second['id']} from xr1: in your mailbox, courier inbox --show {second['id']}",
-        "/compact",
+    lines = [
+        f"[courier] {i} from xr1: in your mailbox, courier inbox --show {i}"
+        for i in (first["id"], second["id"])
     ]
+    assert submitted(boss, 2) == ["\n".join(lines), "/compact"]
     assert submitted(other, 1) == ["for xr2"]
     assert command["id"] and plain["id"]
 

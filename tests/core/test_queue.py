@@ -106,7 +106,9 @@ def test_identity_change_fails_instead_of_misdelivering(herdr, make_dispatcher, 
     assert pane.submit_calls == 0
 
 
-def test_text_stuck_in_box_fails_once_and_is_not_resent(herdr, make_dispatcher, run):
+def test_text_stuck_in_box_fails_once_and_is_not_resent(herdr, make_dispatcher, run, monkeypatch):
+    # About the first Enter retry; later Enters on a ghost are tested in test_ghost_enter.py.
+    monkeypatch.setattr("herdr_courier.core.queue.GHOST_ENTERS", 0)
     pane = herdr.add("w1:p1", submit_mode="stuck")
     d = make_dispatcher()
     item = d.enqueue("w1:p1", "[lane] report", source="t")

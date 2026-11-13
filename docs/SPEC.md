@@ -45,7 +45,7 @@ The existing flat journal and API records retain their field names and order thr
 | `failed` | Delivery cannot continue safely, retries/hold expired, or an in-flight journal entry was recovered after restart. Final. |
 | `cancelled` | Explicit cancellation before submission. Final. |
 | `rejected` | A fresh receiver usage-limit response was observed after submission. Final; never automatically replayed. |
-| `ghost` | Courier text remains after one Enter retry, or an exact/safe retry cannot be proved. Final; text is left in place. |
+| `ghost` | Courier text remains after one Enter retry, or an exact/safe retry cannot be proved. The text is left in place; while it stays exactly in the box of an idle agent with the same session, no hold and no focus (focus allowed for a reader's pointer line), Enter is pressed again once a minute, at most 3 times. |
 | `filed` | A mailbox reader's message that its hook has not shown yet: the pointer line was typed (however that ended), or the reader was working or had other text in its box. Not in the pane queue. Becomes `sent` once the hook shows it; may have its pointer typed again. |
 
 The worker is the only pane writer. Ordinary traffic is FIFO per pane; human priority, routing
@@ -82,7 +82,7 @@ requeuing, preserving guarded recovery/status across restarts.
 |---|---|
 | `status` | Only idle, done and working are sendable. Working can queue another prompt. Blocked or unknown waits before submission. |
 | `session` | Must match the captured session. A missing session waits for a resume; another session is a different receiver. |
-| `focused` | A hint that a person may type; increases empty-input debounce from one to three seconds. It is not a lock. |
+| `focused` | A hint that a person may type; increases empty-input debounce from one to three seconds, and to 30 seconds for a mailbox reader's pointer line. It is not a lock. |
 | `line` | Classified input line: empty, typed or unknown, with evidence. Typed and unknown both wait. |
 | `name` | Identifies receiver-specific between-turn settings and missing-receiver tracking. |
 | `state_seq` | Status-change sequence; paired with status to detect changes between observations and restart settling time. |

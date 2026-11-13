@@ -23,6 +23,8 @@ def test_codex_limit_is_not_reported_as_sent(herdr, make_dispatcher, run, monkey
 def test_single_line_owned_input_is_retried_then_marked_ghost(
     herdr, make_dispatcher, run, monkeypatch
 ):
+    # About the first Enter retry; later Enters on a ghost are tested in test_ghost_enter.py.
+    monkeypatch.setattr("herdr_courier.core.queue.GHOST_ENTERS", 0)
     pane = herdr.add("w1", submit_mode="stuck", terminal="term")
     keys = []
     monkeypatch.setattr(herdr, "enter", lambda target: keys.append(target), raising=False)
@@ -100,7 +102,11 @@ def test_unchanged_old_limit_does_not_reject_first_send_after_reset(
     assert pane.submit_calls == 1
 
 
-def test_rejected_and_ghost_survive_restart_without_replaying(herdr, clock, tmp_path, run):
+def test_rejected_and_ghost_survive_restart_without_replaying(
+    herdr, clock, tmp_path, run, monkeypatch
+):
+    # About the first Enter retry; later Enters on a ghost are tested in test_ghost_enter.py.
+    monkeypatch.setattr("herdr_courier.core.queue.GHOST_ENTERS", 0)
     pane = herdr.add("w1", submit_mode="stuck", terminal="term")
     dispatcher = Dispatcher(herdr, tmp_path / "journal", clock=clock, log=lambda _: None)
     item = dispatcher.enqueue("w1", "owned text", source="test")

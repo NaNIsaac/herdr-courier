@@ -3,7 +3,7 @@ import json
 import pytest
 
 from herdr_courier.core.inputline import InputLine, LineState, matches
-from herdr_courier.core.queue import Dispatcher, State
+from herdr_courier.core.queue import GHOST_ENTER_SECONDS, GHOST_ENTERS, Dispatcher, State
 from herdr_courier.core.transport import HerdrError
 
 
@@ -63,12 +63,13 @@ def test_retry_unblocks_the_following_queue_without_duplicate_text(pending, run)
 def test_retry_is_bounded_when_enter_still_does_not_take(pending, run, herdr, monkeypatch):
     pane, dispatcher, item, keys = pending
     monkeypatch.setattr(herdr, "enter", keys.append)
-    run(dispatcher, 60)
+    run(dispatcher, 60 + (GHOST_ENTERS + 1) * GHOST_ENTER_SECONDS)
     assert item.state is State.GHOST
     assert "one Enter retry" in item.reason
     assert pane.box == item.text
     assert pane.submit_calls == 1
-    assert len(keys) == 1
+    # The first retry, then GHOST_ENTERS more while the text stays, and no more after that.
+    assert len(keys) == 1 + GHOST_ENTERS
 
 
 @pytest.mark.parametrize(

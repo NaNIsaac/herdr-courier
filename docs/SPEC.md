@@ -59,8 +59,10 @@ text; the riders take the head's final state, and a known pre-write rejection re
 `waiting`. A ghost head keeps its rider list in the journal, so a guarded manual submit after a
 restart ends them too. A message waiting for a missing receiver
 may have an empty pane identifier and a wall-clock hold deadline. Known missing receivers
-are looked up periodically; release depends on the captured session. Changed identity normally
-fails, but configured missing-receiver holds and route fallback can keep an unsent item waiting.
+are looked up periodically; release depends on the captured session except for mailbox readers,
+whose held items bind to any returning session, at most 10 per lookup until none remain.
+Changed identity normally fails, but configured missing-receiver holds and route fallback can
+keep an unsent item waiting.
 
 Observation failures can defer an item. Missing-target retries and known pre-write submit
 rejections use exponential backoff and a five-attempt limit. Only `agent_blocked` and

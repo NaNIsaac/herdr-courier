@@ -122,9 +122,12 @@ refusing or failing:
   session or runs another session is held the same way, by name.
 - Every 5 s courier looks the name up. When it is back with the session the messages were queued
   for (a resume, in any pane), the 10 oldest are queued to it and, if more are held, one line
-  `courier: N more held for you: courier inbox` follows them. Back with another session, nothing
-  is typed in; the held messages stay in `courier status` and, with the mailbox on, in
-  `courier inbox`. A pane without a session counts as missing.
+  `courier: N more held for you: courier inbox` follows them. For a mailbox reader, any returning
+  session gets the held messages rebound to it, 10 per lookup until none remain. Their text is
+  already in its mailbox; the normal delivery path types each pointer line or leaves it to a
+  live waiting hook. For other agents back with another session, nothing is typed in; the held
+  messages stay in `courier status` and, with the mailbox on, in `courier inbox`.
+  A pane without a session counts as missing.
 - A held message fails after `hold.ttl` seconds (4 h).
 - While messages are held, the agent named in `hold.summary_to` (boss for secretary, secretary
   for boss) gets one summary, such as `courier: boss missing since 13:20; held 3 (design 2,

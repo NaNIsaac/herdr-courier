@@ -957,7 +957,7 @@ class Dispatcher:
 
         A missing session may be the same agent restarting (a resume), so the item waits for it
         until ``hold_ttl``; another session fails it, since it is another agent. For an agent in
-        ``hold_missing`` both wait, by name, and only a return with the same session sends it.
+        ``hold_missing`` both wait, by name; mailbox readers can return with any session.
         """
         if not (verdict.fatal or verdict.lost):
             return False
@@ -1303,26 +1303,30 @@ class Dispatcher:
         session = agent and (agent.get("agent_session") or {}).get("value")
         if session:
             self.seen[name] = session
-            if m.back is None:
+            reader = name in self.pointer_for
+            if m.back is None or reader:
                 m.back = session
-                # Only a resume of the session the messages were queued for gets them typed in.
-                ready = [i for i in m.items if self.items[i].session == session]
+                ready = [i for i in m.items if reader or self.items[i].session == session]
                 for item_id in ready[:RELEASE_AT_ONCE]:
                     item = self.items[item_id]
                     m.items.remove(item_id)
                     item.pane_id, item.terminal = agent["pane_id"], agent.get("terminal_id")
                     item.held_until = None
+                    item.session = session
                     self.queues.setdefault(item.pane_id, []).append(item_id)
                     self._set(
                         item,
                         State.QUEUED,
-                        f"released: {name} is back",
+                        f"released: {name} is back; in its mailbox"
+                        if reader
+                        else f"released: {name} is back",
                         pane_id=item.pane_id,
+                        session=session,
                         terminal=item.terminal,
                         held_until=None,
                     )
                     m.released += 1
-                if m.released and m.items:
+                if m.released and m.items and not reader:
                     line = f"courier: {len(m.items)} more held for you: `courier inbox`"
         # Kept while a summary still has news for the other agent; _send_summaries drops it then.
         if not m.items and not m.expired and (m.summary_at is None or name not in self.summary_to):
@@ -1375,7 +1379,9 @@ class Dispatcher:
         if m.expired:
             parts.append(f"{len(m.expired)} failed after {self.hold_ttl / 3600:g} h held")
         if m.back is not None:
-            if m.released:
+            if m.released and name in self.pointer_for:
+                parts.append(f"back; {m.released} filed for it")
+            elif m.released:
                 parts.append(f"back with the same session; {m.released} typed in")
             elif held:
                 parts.append(f"back with a new session; the held stay held: `courier inbox {name}`")

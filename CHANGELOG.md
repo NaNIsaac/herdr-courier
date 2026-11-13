@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A mailbox reader that comes back as a new session gets the messages held for it: each is filed
+  for the new session (pointer line, or its waiting hook), 10 per lookup until none remain, instead
+  of staying held.
 - `courier inbox --wait [SECONDS]`, for a Stop hook run with `asyncRewake`: waits for a message
   filed after the turn ended, prints it on stderr and exits 2 so the idle session wakes with it;
   one waiter per reader, the newest wins. While a reader's wait is live courier serve types no

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- courier's own notices to a mailbox reader, such as a ghost report, are filed in its mailbox
+  before their pointer line is typed; before, the pointer led to nothing and the text was lost.
+  A notice that cannot be filed is typed in full.
+
 ## 0.3.0
 
 - With the mailbox on, an agent in `mailbox.readers` gets one line per message in its pane,

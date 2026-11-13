@@ -262,6 +262,8 @@ class Dispatcher:
         self._rejections_before: dict[str, str | None] = {}
         self.merge_chars = merge_chars
         self.pointer_for = frozenset(pointer_for)
+        # Courier's own notices to a reader that could not be filed: typed in full instead.
+        self._unfiled: set[str] = set()
         # For an item typed in with others: the merged prompt, and the ids that rode with it.
         self._carried: dict[str, str] = {}
         self._riders: dict[str, list[str]] = {}
@@ -298,10 +300,13 @@ class Dispatcher:
         hold: bool = True,
         task: dict | None = None,
         item_id: str | None = None,
+        filed: bool = False,
     ) -> Item:
         """Queue ``text`` for ``target``. ``hold=False`` refuses instead of holding it for a
         missing agent, so courier's own summaries never wait on one another. ``item_id`` is one
-        the client chose, so files it copied for the message sit under the message's id."""
+        the client chose, so files it copied for the message sit under the message's id.
+        ``filed`` says the caller copies the item to the mailbox itself (a client's message, with
+        its attachments); anything else for a mailbox reader is filed here before it is typed."""
         if not text.strip():
             raise DispatchError("empty message")
         if text.rstrip().endswith("\\"):
@@ -330,6 +335,8 @@ class Dispatcher:
                     held = self._enqueue_held(
                         target, text, source, human, client_id, task=task, item_id=item_id
                     )
+                    if not filed:
+                        self._file(held)
                     return replace(held, reason=f"{note}; {held.reason}") if note else held
                 raise DispatchError(f"cannot resolve target {target!r}: {exc}") from exc
         session = (agent.get("agent_session") or {}).get("value")
@@ -356,6 +363,8 @@ class Dispatcher:
                 return known
             if task is not None:
                 task["dispatch_id"] = item.id
+            if not filed:
+                self._file(item)
             self._record(item, "queued", full=True, task=task)
             self.items[item.id] = item
             if task is not None:
@@ -363,6 +372,17 @@ class Dispatcher:
             self._push(item)
             self.lock.notify_all()
         return item
+
+    def _file(self, item: Item) -> None:
+        """Copy an item for a mailbox reader to its mailbox, so the pointer line typed for it
+        leads to the text; one that cannot be copied is typed in full instead."""
+        if not self._pointed(item):
+            return
+        try:
+            mailbox.add(self.journal.parent, item)
+        except OSError as exc:
+            self._unfiled.add(item.id)
+            self.log(f"courier: {item.id} for {item.target} not filed, typed in full: {exc}")
 
     def _push(self, item: Item, *, in_order: bool = False) -> None:
         """Queue ``item`` on its pane; ``in_order`` places a moved item among the waiting ones
@@ -442,6 +462,7 @@ class Dispatcher:
                 client_id=client_id,
                 task=task,
                 item_id=item_id,
+                filed=True,
             )
             self._task_report(source, text)
             return item
@@ -454,6 +475,7 @@ class Dispatcher:
                 f"REMINDER {task['key']}, ignore if running",
                 source=source,
                 client_id=client_id,
+                filed=True,
             )
             task["reminded_at"] = now
         else:
@@ -704,7 +726,9 @@ class Dispatcher:
         )
         if mailbox.add(self.journal.parent, item):
             try:
-                self.enqueue(self.notify_to, text, source="courier", client_id=client_id)
+                self.enqueue(
+                    self.notify_to, text, source="courier", client_id=client_id, item_id=item.id
+                )
             except DispatchError as exc:
                 self.log(f"{self.notify_to} notice kept in mailbox: {exc}")
 
@@ -1297,7 +1321,11 @@ class Dispatcher:
         return pointer(item) if self._pointed(item) else item.text
 
     def _pointed(self, item: Item) -> bool:
-        return item.target in self.pointer_for and not _command(item.text)
+        return (
+            item.target in self.pointer_for
+            and item.id not in self._unfiled
+            and not _command(item.text)
+        )
 
     def _merged(self, items: tuple[Item, ...]) -> str:
         if all(self._pointed(i) for i in items):

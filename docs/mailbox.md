@@ -91,6 +91,10 @@ mailbox: the agent reads each message once, not once typed and once from the hoo
 go in one prompt become one pointer line each. A slash command such as `/compact` is still typed
 whole, since the agent reads it only as the whole prompt.
 
+courier's own notices to a reader (a ghost report, a verify result, a task notice) are filed the
+same way, before their pointer line is typed. A notice that cannot be filed, say on a full disk,
+is typed in full instead, so a pointer line always has a message behind it.
+
 The hook also reads the ids of the pointer lines in the prompt:
 
 - an id already shown or done (the same message typed again, say after a ghost) gets one line

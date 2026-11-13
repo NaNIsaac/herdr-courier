@@ -1328,11 +1328,12 @@ class Dispatcher:
             # A reader that is working gets the message from its Stop hook, and one whose box
             # holds other text from the prompt-submit hook when that text is sent: neither
             # waits for the box, and the messages behind it do not wait either.
-            if not verdict.ok and (
-                obs.status in ("working", "blocked") or obs.line.state is LineState.TYPED
+            if (
+                not verdict.ok
+                and (obs.status in ("working", "blocked") or obs.line.state is LineState.TYPED)
+                and self._await_reader(item, f"in the mailbox for the hook: {verdict.reason}")
             ):
-                if self._await_reader(item, f"in the mailbox for the hook: {verdict.reason}"):
-                    return
+                return
             if not verdict.ok:
                 self._set(item, State.WAITING, verdict.reason)
                 return

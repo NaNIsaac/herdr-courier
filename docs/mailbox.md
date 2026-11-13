@@ -36,7 +36,7 @@ event, the ids shown (`-` for none) and the bytes of context added.
 ```sh
 courier inbox            # this pane's agent: every message not done, in full
 courier inbox boss --all # another agent's, done ones included
-courier inbox --show ID  # one message in full
+courier inbox --show ID  # one message in full; marks it shown, like the hook
 courier inbox --ack ID   # mark done
 ```
 
@@ -122,6 +122,8 @@ marks the item `sent` when the hook has shown that row, and until then keeps it 
   that box either.
 - a pointer line that ends any other way than shown (left in the box, refused, failed) leaves the
   item `filed`, not lost.
+- a message filed while its reader was working, with no pointer line typed yet, gets the pointer
+  line about 10 seconds after the reader goes idle if no Stop hook has shown it by then.
 - a filed message the hook has not shown after 5 minutes gets its pointer line typed again, at most
   3 times, each time through the same checks as the first.
 - a filed message stays filed across a restart of courier serve.

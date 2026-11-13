@@ -249,7 +249,8 @@ class Dispatcher:
 
         A message for an agent in ``pointer_for`` (mailbox readers, whose hook shows the text from
         the mailbox) is typed as one ``pointer`` line, so the text reaches the agent once; a slash
-        command is still typed whole."""
+        command is still typed whole and marked done once sent. Already read or done messages
+        are finished without typing their pointer, including riders in a merged prompt."""
         self.herdr = herdr
         self.journal = journal
         self.clock = clock
@@ -952,7 +953,7 @@ class Dispatcher:
 
         A missing session may be the same agent restarting (a resume), so the item waits for it
         until ``hold_ttl``; another session fails it, since it is another agent. For an agent in
-        ``hold_missing`` both wait, by name, and only a return with the same session sends it.
+        ``hold_missing`` both wait, by name; mailbox readers can return with any session.
         """
         if not (verdict.fatal or verdict.lost):
             return False
@@ -1141,6 +1142,15 @@ class Dispatcher:
             return None
         return next((m.state for m in filed if m.id == item.id), None)
 
+    def _finish_shown(self, item: Item) -> bool:
+        """Finish an already shown pointer message without typing it (lock held)."""
+        if self._reader_state(item) not in ("read", "done"):
+            return False
+        self._forget_filed(item.id)
+        self._rewakes.pop(item.id, None)
+        self._finish(item, State.SENT, f"shown to {item.target} by its hook")
+        return True
+
     def _await_reader(self, item: Item, reason: str) -> bool:
         """Leave ``item`` in its reader's mailbox for the hook to show (lock held). False when
         it is not a filed, unshown pointer message, which then goes on as typed text."""
@@ -1298,26 +1308,30 @@ class Dispatcher:
         session = agent and (agent.get("agent_session") or {}).get("value")
         if session:
             self.seen[name] = session
-            if m.back is None:
+            reader = name in self.pointer_for
+            if m.back is None or reader:
                 m.back = session
-                # Only a resume of the session the messages were queued for gets them typed in.
-                ready = [i for i in m.items if self.items[i].session == session]
+                ready = [i for i in m.items if reader or self.items[i].session == session]
                 for item_id in ready[:RELEASE_AT_ONCE]:
                     item = self.items[item_id]
                     m.items.remove(item_id)
                     item.pane_id, item.terminal = agent["pane_id"], agent.get("terminal_id")
                     item.held_until = None
+                    item.session = session
                     self.queues.setdefault(item.pane_id, []).append(item_id)
                     self._set(
                         item,
                         State.QUEUED,
-                        f"released: {name} is back",
+                        f"released: {name} is back; in its mailbox"
+                        if reader
+                        else f"released: {name} is back",
                         pane_id=item.pane_id,
+                        session=session,
                         terminal=item.terminal,
                         held_until=None,
                     )
                     m.released += 1
-                if m.released and m.items:
+                if m.released and m.items and not reader:
                     line = f"courier: {len(m.items)} more held for you: `courier inbox`"
         # Kept while a summary still has news for the other agent; _send_summaries drops it then.
         if not m.items and not m.expired and (m.summary_at is None or name not in self.summary_to):
@@ -1370,7 +1384,9 @@ class Dispatcher:
         if m.expired:
             parts.append(f"{len(m.expired)} failed after {self.hold_ttl / 3600:g} h held")
         if m.back is not None:
-            if m.released:
+            if m.released and name in self.pointer_for:
+                parts.append(f"back; {m.released} filed for it")
+            elif m.released:
                 parts.append(f"back with the same session; {m.released} typed in")
             elif held:
                 parts.append(f"back with a new session; the held stay held: `courier inbox {name}`")
@@ -1398,6 +1414,8 @@ class Dispatcher:
             return
         with self.lock:
             if item.state in FINAL:
+                return
+            if self._finish_shown(item):
                 return
             empty_for = self._empty_for(pane_id, obs.line, now)
             verdict = check(
@@ -1471,6 +1489,8 @@ class Dispatcher:
                 self._empty_for(pane_id, final.line, now)
                 self._set(item, State.WAITING, f"{verdict.reason} (at final check)")
                 return
+            if self._finish_shown(item):
+                return
             # Journalled before the write: after a crash from here on the item is replayed as
             # FAILED and a cancel is refused, so the message can never be written twice. The
             # same holds for each message typed in with it.
@@ -1538,7 +1558,8 @@ class Dispatcher:
         They keep their order, so the first one that cannot go stops the rest: one in flight or
         backing off, a human message behind agent ones or the reverse, one bound to another
         receiver, one about to go back to its unrouted name, a slash command, or one past the
-        size limit. A slash command at the head goes alone too."""
+        size limit. Already shown pointer messages are finished and omitted. A slash command at
+        the head goes alone too."""
         queue = self.queues.get(pane_id, [])
         if (
             self.merge_chars <= 0
@@ -1552,6 +1573,8 @@ class Dispatcher:
         riders = []
         for item_id in queue[1:]:
             item = self.items[item_id]
+            if self._finish_shown(item):
+                continue
             size += 2 + len(_framed(item))
             if (
                 item.state not in (State.QUEUED, State.WAITING)
@@ -1994,12 +2017,19 @@ class Dispatcher:
         self.lock.notify_all()
 
     def _finish(self, item: Item, state: State, reason: str) -> None:
+        """End delivery; sent reader commands are done, unshown pointer messages stay filed."""
         ended, rider = state, reason.startswith("with ")
         # A pointer line only wakes the reader: its message is sent when the hook shows it, so
         # however the typing ended, an unshown message stays filed rather than counted or lost.
         if state in POINTER_ENDS and self._reader_state(item) == "new":
             state, reason = State.FILED, f"pointer {state.value}: {reason}"
             self._filed_at[item.id] = self.clock()
+        if (
+            state is State.SENT
+            and item.target in self.pointer_for
+            and mailbox.is_command(item.text)
+        ):
+            mailbox.mark(self.journal.parent, item.target, [item.id], "done", "serve")
         self._set(item, state, reason)
         state = ended
         # A rider's text is part of its head's, which is reported for both.

@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 from herdr_courier import mailbox
 from herdr_courier.core.queue import (
     IDLE_WAKE_SECONDS,
@@ -127,3 +129,72 @@ def test_a_message_its_waiter_ended_without_gets_its_pointer(herdr, clock, tmp_p
     run(d, mailbox.WAITER_FRESH + 10)
     assert pane.submitted == [pointer(item)]
     assert item.state is State.FILED
+
+
+def test_a_sent_reader_command_is_done_but_ordinary_mail_stays_new(herdr, clock, tmp_path, run):
+    pane = herdr.add("w1:p1", "boss")
+    d = reader(herdr, clock, tmp_path)
+    command = d.enqueue("boss", "/compact", source="t", filed=True)
+    mailbox.add(tmp_path, command)
+    message = d.enqueue("boss", "report", source="t")
+    run(d, 10)
+    assert pane.submitted == ["/compact"]
+    assert command.state is State.SENT
+    assert {m.id: m.state for m in mailbox.load(tmp_path, "boss")} == {
+        command.id: "done",
+        message.id: "new",
+    }
+    assert '"event": "serve"' in mailbox.path_for(tmp_path, "boss").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("kind", ["shown", "done", None])
+@pytest.mark.parametrize("rewake", [False, True])
+def test_pointer_submission_rechecks_mailbox_at_the_final_observation(
+    herdr, clock, tmp_path, run, monkeypatch, kind, rewake
+):
+    pane = herdr.add("w1:p1", "boss")
+    d = reader(herdr, clock, tmp_path)
+    item = d.enqueue("boss", "report", source="t")
+    if rewake:
+        run(d, 10)
+        assert item.state is State.FILED
+        pane.submitted.clear()
+        pane.status = "idle"
+        clock.now += REWAKE_SECONDS
+    d.tick()
+    clock.now += 2
+    observe = d._observe
+    observations = 0
+
+    def show_before_submit(current):
+        nonlocal observations
+        obs = observe(current)
+        observations += 1
+        if observations == 2 and kind:
+            mailbox.mark(tmp_path, "boss", [item.id], kind, "Stop")
+        return obs
+
+    monkeypatch.setattr(d, "_observe", show_before_submit)
+    run(d, 10)
+    assert observations >= 2
+    if kind:
+        assert pane.submitted == []
+        assert item.state is State.SENT
+        assert item.reason == "shown to boss by its hook"
+        assert item.id not in d.queues[item.pane_id]
+    else:
+        assert pane.submitted == [pointer(item)]
+        assert item.state is State.FILED
+
+
+def test_a_shown_rider_is_omitted_from_the_merged_pointer_prompt(herdr, clock, tmp_path, run):
+    pane = herdr.add("w1:p1", "boss")
+    d = reader(herdr, clock, tmp_path)
+    head, shown, new = [d.enqueue("boss", text, source="t") for text in ("one", "two", "three")]
+    mailbox.mark(tmp_path, "boss", [shown.id], "shown", "Stop")
+    run(d, 10)
+    assert pane.submitted == [f"{pointer(head)}\n{pointer(new)}"]
+    assert shown.state is State.SENT
+    assert shown.reason == "shown to boss by its hook"
+    assert shown.id not in d._riders[head.id]
+    assert head.state is new.state is State.FILED

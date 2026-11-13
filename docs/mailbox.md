@@ -62,7 +62,8 @@ prints the open messages as `additionalContext` and records them as shown:
 Slash commands (text starting with `/` after leading whitespace is removed) are excluded from
 UserPromptSubmit, SessionStart, Stop and `inbox --wait`: they are never shown or marked by these
 readers, never block Stop and never wake the waiter; `courier inbox` still lists them. courier
-serve types them whole into the pane, the only form in which a command runs.
+serve types them whole into the pane, the only form in which a command runs. Once a reader's
+command is sent, serve records it as `done` with event `serve`, so it leaves the open inbox.
 
 It prints nothing when there is nothing to show or the agent is not a reader. With an empty
 `readers` list it returns before asking herdr for the agent's name. Each message is cut at 2,000
@@ -130,6 +131,10 @@ Submitting that line is a prompt, so the UserPromptSubmit hook runs and adds the
 mailbox: the agent reads each message once, not once typed and once from the hook. Messages that
 go in one prompt become one pointer line each. A slash command such as `/compact` is still typed
 whole, since the agent reads it only as the whole prompt.
+
+Immediately before submitting a pointer prompt, serve checks the mailbox again. A message
+already `read` or `done` is marked `sent` without typing its pointer and removed from the pane
+queue. This applies to re-wakes too; already shown riders are omitted from a merged prompt.
 
 courier's own notices to a reader (a ghost report, a verify result, a task notice) are filed the
 same way, before their pointer line is typed. A notice that cannot be filed, say on a full disk,

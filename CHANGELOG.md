@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A slash command serve typed for a mailbox reader is marked done, so `courier inbox` no longer
+  lists old `/compact` lines as open.
+- Serve checks the mailbox right before typing a pointer line: a message the Stop hook already
+  showed, or the reader acked, gets no pointer (also on a re-wake, and as a rider in a merged
+  prompt) and ends sent.
+- A mailbox reader that comes back as a new session gets the messages held for it: each is filed
+  for the new session (pointer line, or its waiting hook), 10 per lookup until none remain, instead
+  of staying held.
 - Mailbox hooks and `inbox --wait` ignore slash commands, so filed commands neither block Stop
   nor wake an idle reader; courier serve still types them unchanged into the pane.
 

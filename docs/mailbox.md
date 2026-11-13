@@ -59,6 +59,11 @@ prints the open messages as `additionalContext` and records them as shown:
   it this way, with nothing typed into its pane. With no new message it prints nothing and the
   agent stops.
 
+Slash commands (text starting with `/` after leading whitespace is removed) are excluded from
+UserPromptSubmit, SessionStart, Stop and `inbox --wait`: they are never shown or marked by these
+readers, never block Stop and never wake the waiter; `courier inbox` still lists them. courier
+serve types them whole into the pane, the only form in which a command runs.
+
 It prints nothing when there is nothing to show or the agent is not a reader. With an empty
 `readers` list it returns before asking herdr for the agent's name. Each message is cut at 2,000
 characters and at most 10 are shown: the ones the prompt's pointer lines name, then the newest by

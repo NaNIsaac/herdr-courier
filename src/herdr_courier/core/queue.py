@@ -159,11 +159,6 @@ def _hhmm(wall: float) -> str:
     return time.strftime("%H:%M", time.localtime(wall))
 
 
-def _command(text: str) -> bool:
-    """A slash command such as /compact, which the agent reads only as the whole prompt."""
-    return text.lstrip().startswith("/")
-
-
 def _framed(item: "Item") -> str:
     """``item`` as one part of a merged prompt, with the header line `courier inbox` uses."""
     return f"--- {item.id} from {item.source} at {_hhmm(item.created)} ---\n{item.text}"
@@ -1535,7 +1530,7 @@ class Dispatcher:
         return (
             item.target in self.pointer_for
             and item.id not in self._unfiled
-            and not _command(item.text)
+            and not mailbox.is_command(item.text)
         )
 
     def _merged(self, items: tuple[Item, ...]) -> str:
@@ -1551,7 +1546,12 @@ class Dispatcher:
         receiver, one about to go back to its unrouted name, a slash command, or one past the
         size limit. A slash command at the head goes alone too."""
         queue = self.queues.get(pane_id, [])
-        if self.merge_chars <= 0 or _command(head.text) or not queue or queue[0] != head.id:
+        if (
+            self.merge_chars <= 0
+            or mailbox.is_command(head.text)
+            or not queue
+            or queue[0] != head.id
+        ):
             return []
         now = self.clock()
         size = len(_framed(head))
@@ -1565,7 +1565,7 @@ class Dispatcher:
                 or item.human != head.human
                 or (item.session, item.terminal) != (head.session, head.terminal)
                 or item.id in self._fallback
-                or _command(item.text)
+                or mailbox.is_command(item.text)
                 or size > self.merge_chars
             ):
                 break

@@ -100,6 +100,9 @@ since Claude Code enforces it on an `asyncRewake` hook:
 { "type": "command", "command": "courier inbox --wait", "asyncRewake": true, "timeout": 3600 }
 ```
 
+`courier inbox NAME --wait` waits only in the pane of agent NAME and returns at once in any
+other pane, so the hook can be tried on one agent of a config dir several agents share.
+
 The pointer line stays: when nothing woke the reader, its message is still filed and typed.
 
 ## Pointer lines

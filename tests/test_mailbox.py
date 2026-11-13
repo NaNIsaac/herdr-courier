@@ -309,6 +309,7 @@ def test_a_pointer_left_in_the_box_keeps_its_message_filed_until_shown(
 @pytest.fixture
 def quick_wait(monkeypatch):
     monkeypatch.setattr(cli, "WAIT_POLL", 0.05)
+    monkeypatch.delenv("HERDR_PANE_ID", raising=False)
     monkeypatch.setattr("sys.stdin", io.StringIO('{"hook_event_name":"Stop"}'))
 
 
@@ -353,3 +354,10 @@ def test_a_newer_waiter_takes_over(readers, quick_wait, capsys):
     assert second_result["code"] == cli.EXIT_WAKE
     log = mailbox.hook_log_path(readers).read_text(encoding="utf-8")
     assert log.count("Stop/wait stepped aside") == 1
+
+
+def test_a_named_wait_returns_at_once_in_another_agents_pane(readers, quick_wait, monkeypatch):
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:p2")
+    monkeypatch.setattr(cli, "own_name", lambda: "xr1")
+    assert cli.main(["inbox", "boss", "--wait", "5"]) == 0
+    assert not mailbox.hook_log_path(readers).exists()

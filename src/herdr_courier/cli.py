@@ -581,7 +581,8 @@ def inbox_wait(root: Path, name: str | None, seconds: float) -> int:
     session without anything typed into its pane.
 
     Messages already new when the wait starts are left to the Stop hook that blocks with them.
-    One waiter per reader: each writes its own token to mailbox/<name>.wait and a waiter whose
+    With ``name``, a wait started in another agent's pane returns at once, so the hook can be tried
+    on one agent of a shared config dir. One waiter per reader: each writes its own token to mailbox/<name>.wait and a waiter whose
     token was replaced by a newer one exits 0, as it does after ``seconds``.
     """
     if sys.stdin is not None and not sys.stdin.isatty():
@@ -591,6 +592,9 @@ def inbox_wait(root: Path, name: str | None, seconds: float) -> int:
             readers = config.load().mailbox.readers
             if not readers or (name := own_name()) not in readers:
                 return 0
+        elif os.environ.get("HERDR_PANE_ID") and own_name() != name:
+            # A hook in a config dir several agents share, limited to one of them.
+            return 0
         lock = mailbox.mailbox_dir(root) / f"{mailbox.path_for(root, name).stem}.wait"
         lock.parent.mkdir(parents=True, exist_ok=True)
         token = uuid.uuid4().hex

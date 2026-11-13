@@ -42,6 +42,11 @@ RELEASE_AT_ONCE = 10
 LOOKUP_EVERY = 5.0
 # Starts the reason of a message whose route was not taken, so courier send can warn about it.
 ROUTE_MISSED = "not routed: "
+# How often filed messages are looked up in their readers' mailboxes, and how long one may stay
+# unshown before its pointer line is typed again, at most REWAKES times.
+MAILBOX_EVERY = 2.0
+REWAKE_SECONDS = 300.0
+REWAKES = 3
 
 
 class State(StrEnum):
@@ -54,11 +59,15 @@ class State(StrEnum):
     CANCELLED = "cancelled"
     REJECTED = "rejected"
     GHOST = "ghost"
+    # In a mailbox reader's mailbox, not yet shown by its hook: sent once the hook shows it.
+    FILED = "filed"
 
 
 FINAL = frozenset({State.SENT, State.FAILED, State.CANCELLED, State.REJECTED, State.GHOST})
 # From the moment the write may have started; such an item is never written again.
 IN_FLIGHT = frozenset({State.SUBMITTING, State.VERIFYING})
+# Ends of a typed pointer line that leave its message in the mailbox, for the hook to bring.
+POINTER_ENDS = frozenset({State.SENT, State.GHOST, State.FAILED, State.REJECTED})
 
 
 @dataclass(kw_only=True)
@@ -264,6 +273,10 @@ class Dispatcher:
         self.pointer_for = frozenset(pointer_for)
         # Courier's own notices to a reader that could not be filed: typed in full instead.
         self._unfiled: set[str] = set()
+        # Filed items: when they were filed or last woken, and how often they were woken again.
+        self._filed_at: dict[str, float] = {}
+        self._rewakes: dict[str, int] = {}
+        self._mailbox_checked = -math.inf
         # For an item typed in with others: the merged prompt, and the ids that rode with it.
         self._carried: dict[str, str] = {}
         self._riders: dict[str, list[str]] = {}
@@ -991,7 +1004,7 @@ class Dispatcher:
                 if item is None:
                     raise DispatchError(f"no item {item_id}")
                 left = deadline - time.monotonic()
-                if item.state in FINAL or left <= 0:
+                if item.state in FINAL or item.state is State.FILED or left <= 0:
                     return item
                 self.lock.wait(min(left, 1.0))
 
@@ -1032,9 +1045,15 @@ class Dispatcher:
                 for name, m in self.missing.items()
                 if pane is None and m.items
             }
+            filed = [
+                i.as_dict()
+                for i in self.items.values()
+                if i.state is State.FILED and (pane is None or i.pane_id == pane)
+            ]
             return {
                 "panes": panes,
                 "held": held,
+                "filed": filed,
                 "recent": [i.as_dict() for i in finished],
                 "routes": dict(self.routes),
             }
@@ -1056,6 +1075,8 @@ class Dispatcher:
         self._apply_routes()
         if self.missing:
             self._look_for_missing()
+        if self._filed_at and self.clock() - self._mailbox_checked >= MAILBOX_EVERY:
+            self._check_filed()
         with self.lock:
             heads = [
                 (pane_id, self.items[queue[0]]) for pane_id, queue in self.queues.items() if queue
@@ -1068,6 +1089,66 @@ class Dispatcher:
                     self._stall(item, f"dispatcher error: {exc!r}")
         if self._ghosts:
             self._report_ghosts()
+
+    def _reader_state(self, item: Item) -> str | None:
+        """The mailbox state (new, read, done) of an item typed as a pointer line, or None."""
+        if not self._pointed(item):
+            return None
+        try:
+            filed = mailbox.load(self.journal.parent, item.target)
+        except OSError:
+            return None
+        return next((m.state for m in filed if m.id == item.id), None)
+
+    def _await_reader(self, item: Item, reason: str) -> bool:
+        """Leave ``item`` in its reader's mailbox for the hook to show (lock held). False when
+        it is not a filed, unshown pointer message, which then goes on as typed text."""
+        if self._reader_state(item) != "new":
+            return False
+        self._unqueue(item)
+        self._set(item, State.FILED, reason)
+        self._filed_at[item.id] = self.clock()
+        return True
+
+    def _check_filed(self) -> None:
+        """End each filed message its reader's hook has shown; type the pointer line again for
+        one left unshown REWAKE_SECONDS, at most REWAKES times."""
+        with self.lock:
+            self._mailbox_checked = now = self.clock()
+            filed = [self.items[i] for i in self._filed_at if i in self.items]
+            stale = [i for i in self._filed_at if i not in self.items]
+            for item_id in stale:
+                self._filed_at.pop(item_id, None)
+        states: dict[str, dict[str, str]] = {}
+        for target in {i.target for i in filed}:
+            try:
+                states[target] = {m.id: m.state for m in mailbox.load(self.journal.parent, target)}
+            except OSError:
+                states[target] = {}
+        with self.lock:
+            for item in filed:
+                if item.state is not State.FILED:
+                    self._filed_at.pop(item.id, None)
+                    continue
+                state = states[item.target].get(item.id)
+                if state in ("read", "done"):
+                    self._filed_at.pop(item.id, None)
+                    self._rewakes.pop(item.id, None)
+                    self._finish(item, State.SENT, f"shown to {item.target} by its hook")
+                elif (
+                    now - self._filed_at[item.id] >= REWAKE_SECONDS
+                    and self._rewakes.get(item.id, 0) < REWAKES
+                    and item.pane_id
+                ):
+                    self._rewakes[item.id] = self._rewakes.get(item.id, 0) + 1
+                    self._filed_at.pop(item.id, None)
+                    item.retry_at = 0.0
+                    self._set(
+                        item,
+                        State.QUEUED,
+                        f"unshown, pointer typed again ({self._rewakes[item.id]}/{REWAKES})",
+                    )
+                    self._push(item, in_order=True)
 
     def _report_ghosts(self) -> None:
         """Tell someone other than the receiver that courier text was left in its input box.
@@ -1244,6 +1325,14 @@ class Dispatcher:
             )
             if self._refused(item, verdict):
                 return
+            # A reader that is working gets the message from its Stop hook, and one whose box
+            # holds other text from the prompt-submit hook when that text is sent: neither
+            # waits for the box, and the messages behind it do not wait either.
+            if not verdict.ok and (
+                obs.status in ("working", "blocked") or obs.line.state is LineState.TYPED
+            ):
+                if self._await_reader(item, f"in the mailbox for the hook: {verdict.reason}"):
+                    return
             if not verdict.ok:
                 self._set(item, State.WAITING, verdict.reason)
                 return
@@ -1685,7 +1774,11 @@ class Dispatcher:
             if not (changed or fallback):
                 return
             waiting = sorted(
-                (i for i in self.items.values() if i.state not in FINAL | IN_FLIGHT),
+                (
+                    i
+                    for i in self.items.values()
+                    if i.state not in FINAL | IN_FLIGHT and i.state is not State.FILED
+                ),
                 key=lambda i: i.created,
             )
         for item in waiting:
@@ -1784,9 +1877,16 @@ class Dispatcher:
         self.lock.notify_all()
 
     def _finish(self, item: Item, state: State, reason: str) -> None:
+        ended, rider = state, reason.startswith("with ")
+        # A pointer line only wakes the reader: its message is sent when the hook shows it, so
+        # however the typing ended, an unshown message stays filed rather than counted or lost.
+        if state in POINTER_ENDS and self._reader_state(item) == "new":
+            state, reason = State.FILED, f"pointer {state.value}: {reason}"
+            self._filed_at[item.id] = self.clock()
         self._set(item, state, reason)
+        state = ended
         # A rider's text is part of its head's, which is reported for both.
-        if state is State.GHOST and item.id not in self._ghosted and not reason.startswith("with "):
+        if state is State.GHOST and item.id not in self._ghosted and not rider:
             self._ghosted.add(item.id)
             self._ghosts.append(item.id)
         queue = self.queues.get(item.pane_id, [])
@@ -1997,7 +2097,13 @@ class Dispatcher:
                 missing.items.append(item.id)
                 self._record(item, item.reason, full=True)
                 continue
-            if item.state in IN_FLIGHT:
+            if item.state is State.FILED or (
+                item.state in IN_FLIGHT and self._reader_state(item) == "new"
+            ):
+                # Its text is in the mailbox, which the hook shows whatever the pane got.
+                item.state = State.FILED
+                self._filed_at[item.id] = self.clock()
+            elif item.state in IN_FLIGHT:
                 # The write may have happened before the restart and was not confirmed:
                 # delivery is unknown, and writing again could duplicate it.
                 item.reason = f"dispatcher restarted while {item.state}; delivery unknown"

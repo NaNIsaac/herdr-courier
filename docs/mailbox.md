@@ -50,7 +50,11 @@ prints the open messages as `additionalContext` and records them as shown:
 
 - on UserPromptSubmit, the `new` ones;
 - on SessionStart (after a compaction, resume or restart), every one not `done`, since the context
-  that held them may be gone.
+  that held them may be gone;
+- on Stop, at the end of a turn, the `new` ones as the reason of a `"decision": "block"`, so the
+  agent goes on with them instead of stopping. An agent that was working when its mail came gets
+  it this way, with nothing typed into its pane. With no new message it prints nothing and the
+  agent stops.
 
 It prints nothing when there is nothing to show or the agent is not a reader. With an empty
 `readers` list it returns before asking herdr for the agent's name. Each message is cut at 2,000
@@ -70,6 +74,9 @@ In the settings file of the agent's Claude config dir:
         "matcher": "compact|resume",
         "hooks": [{ "type": "command", "command": "courier inbox --hook", "timeout": 10 }]
       }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "courier inbox --hook", "timeout": 10 }] }
     ]
   }
 }
@@ -103,6 +110,24 @@ The hook also reads the ids of the pointer lines in the prompt:
   serve files a message just after queuing it, so the hook first waits up to 2 seconds for it.
 
 A reader without the hook still sees the id and the command to read it.
+
+## When a message counts as sent
+
+For a reader the pointer line only wakes the agent; the message is the mailbox row. courier serve
+marks the item `sent` when the hook has shown that row, and until then keeps it `filed`:
+
+- a reader that is working, or whose input box holds other text (someone typing, or a line left
+  there), gets no pointer line at all. The Stop hook brings the message at the end of the turn, or
+  the prompt-submit hook when the text in the box is sent. The messages behind it do not wait for
+  that box either.
+- a pointer line that ends any other way than shown (left in the box, refused, failed) leaves the
+  item `filed`, not lost.
+- a filed message the hook has not shown after 5 minutes gets its pointer line typed again, at most
+  3 times, each time through the same checks as the first.
+- a filed message stays filed across a restart of courier serve.
+
+`courier status` lists filed items, and `courier send --wait` returns when its message is sent or
+filed.
 
 ## Turning it off
 

@@ -155,14 +155,15 @@ def test_a_reader_gets_one_pointer_line_and_the_hook_brings_the_text_once(
 
 
 def test_pointer_lines_merge_into_one_prompt_and_others_keep_their_text(herdr, start, tmp_path):
-    boss = herdr.add("w1:p1", "boss", box="typing")
+    boss = herdr.add("w1:p1", "boss")
     other = herdr.add("w1:p2", "xr2")
     server, service = start(herdr, mailbox=True, pointer_for=("boss",))
+    service.dispatcher.hold("boss", owner="t", reason="held", ttl=None)
     first = send(server, service, "first")
     second = send(server, service, "second")
     command = send(server, service, "/compact")
     plain = send(server, service, "for xr2", target="xr2")
-    boss.box = ""
+    service.dispatcher.release("boss")
     lines = [
         f"[courier] {i} from xr1: in your mailbox, courier inbox --show {i}"
         for i in (first["id"], second["id"])
@@ -228,3 +229,67 @@ def test_send_warns_about_a_slash_git_bash_rewrote(herdr, start, capsys, text, w
     start(herdr)
     assert cli.main(["send", "boss", text]) == 0
     assert ("Git Bash" in capsys.readouterr().err) is warned
+
+
+def wait_for(check, seconds=5):
+    deadline = time.monotonic() + seconds
+    while not check() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return check()
+
+
+def test_a_reader_with_text_in_its_box_gets_mail_from_the_hook_and_nothing_is_typed(
+    herdr, start, tmp_path, monkeypatch, capsys
+):
+    (tmp_path / "config.toml").write_text('[mailbox]\nreaders = ["boss"]\n', encoding="utf-8")
+    boss = herdr.add("w1:p1", "boss", box="half a sentence the owner is typing")
+    server, service = start(herdr, mailbox=True, pointer_for=("boss",))
+    items = [send(server, service, f"message {n}") for n in range(3)]
+    d = service.dispatcher
+    assert wait_for(lambda: all(d.items[i["id"]].state == "filed" for i in items))
+    assert boss.submit_calls == 0
+    assert [i["id"] for i in d.status()["filed"]] == [i["id"] for i in items]
+    # The owner sends what they typed: the prompt-submit hook brings all three.
+    shown = hook(monkeypatch, capsys, "UserPromptSubmit", prompt="half a sentence")
+    assert all(f"message {n}" in shown["additionalContext"] for n in range(3))
+    monkeypatch.setattr("herdr_courier.core.queue.MAILBOX_EVERY", 0.0)
+    assert wait_for(lambda: all(d.items[i["id"]].state == "sent" for i in items))
+    assert d.items[items[0]["id"]].reason == "shown to boss by its hook"
+
+
+def test_the_stop_hook_hands_a_working_reader_its_new_mail_once(
+    herdr, start, tmp_path, monkeypatch, capsys
+):
+    (tmp_path / "config.toml").write_text('[mailbox]\nreaders = ["boss"]\n', encoding="utf-8")
+    boss = herdr.add("w1:p1", "boss", status="working")
+    server, service = start(herdr, mailbox=True, pointer_for=("boss",))
+    item = send(server, service, "land AMG#73")
+    d = service.dispatcher
+    assert wait_for(lambda: d.items[item["id"]].state == "filed")
+    assert boss.submit_calls == 0
+
+    def stop(active):
+        payload = {"hook_event_name": "Stop", "stop_hook_active": active}
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+        assert cli.main(["inbox", "boss", "--hook"]) == 0
+        return capsys.readouterr().out
+
+    first = json.loads(stop(False))
+    assert first["decision"] == "block" and "land AMG#73" in first["reason"]
+    assert stop(True) == ""
+
+
+def test_a_pointer_left_in_the_box_keeps_its_message_filed_until_shown(
+    herdr, start, tmp_path, monkeypatch, capsys
+):
+    (tmp_path / "config.toml").write_text('[mailbox]\nreaders = ["boss"]\n', encoding="utf-8")
+    boss = herdr.add("w1:p1", "boss", submit_mode="stuck")
+    server, service = start(herdr, mailbox=True, pointer_for=("boss",))
+    item = send(server, service, "merge-ready RL#24")
+    d = service.dispatcher
+    assert wait_for(lambda: d.items[item["id"]].state == "filed", seconds=30)
+    assert d.items[item["id"]].reason.startswith("pointer ghost")
+    assert boss.box.startswith("[courier]")
+    hook(monkeypatch, capsys, "UserPromptSubmit", prompt="something else")
+    monkeypatch.setattr("herdr_courier.core.queue.MAILBOX_EVERY", 0.0)
+    assert wait_for(lambda: d.items[item["id"]].state == "sent")

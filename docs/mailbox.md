@@ -84,6 +84,24 @@ In the settings file of the agent's Claude config dir:
 
 Several agents can share a config dir. Only the agents in `mailbox.readers` get anything back.
 
+### Waking an idle reader
+
+The hooks above run only when the agent starts or ends a turn, so a message filed while it sits
+idle still needs its pointer line. `courier inbox --wait [SECONDS]` is meant for a second Stop
+hook that Claude Code runs in the background with `asyncRewake`: it waits up to SECONDS (default
+3000) for a message filed after the turn ended, prints it on stderr, records it as shown and
+exits 2, which wakes the session with the text as a system reminder. Messages already new when it
+starts are left to the blocking Stop hook. Each wait writes a token to `mailbox/<name>.wait`; a
+wait whose token a newer one replaced exits 0, so a reader has one waiter at a time. Every start,
+wake, step-aside and time-out is a line in `hook.log`. Give the hook a timeout above SECONDS,
+since Claude Code enforces it on an `asyncRewake` hook:
+
+```json
+{ "type": "command", "command": "courier inbox --wait", "asyncRewake": true, "timeout": 3600 }
+```
+
+The pointer line stays: when nothing woke the reader, its message is still filed and typed.
+
 ## Pointer lines
 
 With `mailbox.write = true`, a message for an agent in `mailbox.readers` is typed into its pane

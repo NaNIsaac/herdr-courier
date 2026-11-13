@@ -1,0 +1,7 @@
+> [courier] 1 new message from sender: courier inbox
+  ⎿  You're out of usage credits. /model to switch models.
+
+────────────────────────────────────────
+❯
+────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

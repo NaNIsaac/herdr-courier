@@ -1,6 +1,7 @@
 import pytest
 
-from herdr_courier.core.queue import Dispatcher, DispatchError, State
+from herdr_courier import mailbox
+from herdr_courier.core.queue import Dispatcher, DispatchError, State, pointer
 
 
 @pytest.mark.parametrize(
@@ -109,3 +110,35 @@ def test_with_no_one_else_to_tell_the_ghost_is_logged(herdr, clock, tmp_path, ru
     assert item.state is State.GHOST
     assert any(line.startswith(f"courier: {item.id} for solo") for line in lines)
     assert len(d.items) == 1
+
+
+def test_a_ghost_notice_to_a_mailbox_reader_is_filed_before_its_pointer_line(
+    herdr, make_dispatcher, run, tmp_path
+):
+    herdr.add("w1:p1", "lane", submit_mode="stuck")
+    sec = herdr.add("w1:p2", "secretary")
+    d = make_dispatcher(pointer_for=("secretary",))
+    item = d.enqueue("lane", "report", source="t")
+    run(d, 20)
+    assert item.state is State.GHOST
+    [alert] = [i for i in d.items.values() if i.target == "secretary"]
+    assert sec.submitted == [pointer(alert)]
+    [filed] = mailbox.load(tmp_path, "secretary")
+    assert (filed.id, filed.source, filed.text) == (alert.id, "courier", alert.text)
+
+
+def test_a_notice_that_cannot_be_filed_is_typed_in_full(
+    herdr, make_dispatcher, run, tmp_path, monkeypatch
+):
+    def full(*_):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(mailbox, "add", full)
+    herdr.add("w1:p1", "lane", submit_mode="stuck")
+    sec = herdr.add("w1:p2", "secretary")
+    d = make_dispatcher(pointer_for=("secretary",))
+    d.enqueue("lane", "report", source="t")
+    run(d, 20)
+    [alert] = [i for i in d.items.values() if i.target == "secretary"]
+    assert sec.submitted == [alert.text]
+    assert alert.text.startswith("courier: ")

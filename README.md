@@ -494,7 +494,7 @@ profile; that file must exist.
 | `ovis.panes` | `["secretary"]` | while Ovis answers, messages for these agents go only between turns |
 | `ovis.settle` | `3.0` | seconds the agent state must stay unchanged after a turn before such a message goes |
 | `mailbox.write` | `false` | the daemon also keeps a mailbox copy of every queued message |
-| `mailbox.readers` | `[]` | agents whose `courier inbox --hook` returns their open messages |
+| `mailbox.readers` | `[]` | agents whose `courier inbox --hook` returns their open messages; with `mailbox.write` on, their panes get a pointer line per message instead of its text |
 | `delivery.merge_chars` | `6000` | messages waiting for one ready pane go in one prompt up to this size; `0` types each alone |
 | `files.inbox` | `""` | where `courier send --file` copies files on this PC; `""` is `inbox/` in the state directory |
 

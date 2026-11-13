@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+- A Claude Code pane stopped by its usage limit no longer counts typed messages as sent:
+  pointers stay filed and plain messages wait, with the stop line in status, one probe every
+  10 minutes, and delivery resumes once the stop clears.
+- A slash command serve typed for a mailbox reader is marked done, so `courier inbox` no longer
+  lists old `/compact` lines as open.
+- Serve checks the mailbox right before typing a pointer line: a message the Stop hook already
+  showed, or the reader acked, gets no pointer (also on a re-wake, and as a rider in a merged
+  prompt) and ends sent.
+- A mailbox reader that comes back as a new session gets the messages held for it: each is filed
+  for the new session (pointer line, or its waiting hook), 10 per lookup until none remain, instead
+  of staying held.
+- Mailbox hooks and `inbox --wait` ignore slash commands, so filed commands neither block Stop
+  nor wake an idle reader; courier serve still types them unchanged into the pane.
+
+- `courier inbox --wait [SECONDS]`, for a Stop hook run with `asyncRewake`: waits for a message
+  filed after the turn ended, prints it on stderr and exits 2 so the idle session wakes with it;
+  one waiter per reader, the newest wins. While a reader's wait is live courier serve types no
+  pointer line for it, and types one as soon as the wait ends without showing the message.
+- After a compaction the hook shows again only the read messages from the last day, not every one
+  never acked: a reader with hundreds of old read copies spent its new context on them. When more
+  than 10 messages are open, the ones the prompt's pointer lines name are always among those shown,
+  and the rest are the newest by time.
+- The SessionStart hook no longer marks the messages it shows: a message filed while its reader
+  was compacting was counted as sent and the reader sat idle with it in its context. It now stays
+  filed until a prompt or Stop hook shows it, so its pointer line still starts a turn.
+- courier knows its own text in an input box also when the box wrapped it onto more rows or shows
+  it as a `[Pasted text #N +K lines]` placeholder, and presses Enter again on a ghost every minute,
+  up to 3 more times, while the agent is idle and unfocused (a reader's pointer line: focused too)
+  and the box holds exactly that text.
+- A mailbox reader's focused pane gets its pointer line once the box has stayed empty for 30 s,
+  since one pane is always focused, often an idle agent nobody watches.
+- `courier inbox --show ID` marks the message shown, so a reader without a live hook ends the item
+  by reading it.
+- A message filed while its reader was working gets its pointer line about 10 s after the reader
+  goes idle when no Stop hook has shown it, instead of after the 5 minute re-wake.
+
+- A message for a mailbox reader is `sent` only when the reader's hook has shown it. Until then it
+  is `filed`: a reader that is working or has other text in its input box gets no pointer line and
+  no longer holds up the messages behind it, a pointer line left in the box keeps its message
+  filed instead of lost, an unshown message gets its pointer typed again up to 3 times, and filed
+  messages survive a restart.
+- `courier inbox --hook` on Stop hands the agent its new messages at the end of its turn, so a
+  working agent gets its mail without anything typed into its pane.
+
+- courier's own notices to a mailbox reader, such as a ghost report, are filed in its mailbox
+  before their pointer line is typed; before, the pointer led to nothing and the text was lost.
+  A notice that cannot be filed is typed in full.
+
+## 0.3.0
+
+- With the mailbox on, an agent in `mailbox.readers` gets one line per message in its pane,
+  `[courier] <id> from <sender>: in your mailbox, courier inbox --show <id>`, and its hook adds
+  the text, so the agent no longer gets each message twice. The hook names an id that comes again
+  instead of showing its text twice, and one not filed yet. Slash commands are still typed whole.
 - `COURIER_CONFIG` names the settings file to read instead of `config.toml` in the state
   directory, so a profile can keep it with its other settings. A file it names must exist, and
   `courier doctor` shows which file is read.

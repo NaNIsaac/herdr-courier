@@ -42,6 +42,10 @@ EXIT_FAILED = 1
 EXIT_UNAVAILABLE = 3
 EXIT_TIMEOUT = 4
 EXIT_CAPACITY = 5
+# Exit status a Claude Code hook with asyncRewake wakes the session on.
+EXIT_WAKE = 2
+WAIT_SECONDS = 3000.0
+WAIT_POLL = 1.0
 # Longer than the server's worst case for resolving a target (herdr CLI timeout 15 s).
 SEND_TIMEOUT = 30.0
 SERVE_HELP = "run the dispatcher, the one process that writes into panes"
@@ -215,7 +219,7 @@ def cmd_send(args: argparse.Namespace) -> int:
             print(f"{len(files)} file(s) in {folder}")
         return 0
     budget = None if args.timeout is None else args.timeout / 1000
-    while item["state"] not in ("sent", "failed", "cancelled", "rejected", "ghost"):
+    while item["state"] not in ("sent", "filed", "failed", "cancelled", "rejected", "ghost"):
         left = 60.0 if budget is None else budget - (time.monotonic() - started)
         if left <= 0:
             print(f"timeout: {item['id']} is {item['state']}: {item['reason']}", file=sys.stderr)
@@ -225,6 +229,8 @@ def cmd_send(args: argparse.Namespace) -> int:
     print(f"{item['state']} {item['id']} to {item['target']} ({item['pane_id']}): {item['reason']}")
     if folder:
         print(f"{len(files)} file(s) in {folder}")
+    if item["state"] == "filed":
+        return 0
     if item["state"] != "sent":
         return EXIT_FAILED
     wait = ["herdr", "agent", "wait", item["pane_id"]]
@@ -299,6 +305,9 @@ def render_status(reply: dict[str, Any], *, width: int, recent: int, now: float)
     for name, info in held.items():
         out.append(f"{name}  held until it is back")
         pending(info["pending"])
+    if status.get("filed"):
+        out.append("filed, waiting for the reader's hook:")
+        pending(status["filed"])
     if status["recent"]:
         out.append("recent:")
         for item in status["recent"][-recent:]:
@@ -518,9 +527,13 @@ def own_name() -> str | None:
 def inbox_hook(root: Path, name: str | None) -> int:
     """For a Claude Code hook: open messages as additionalContext, and nothing when there are none.
 
-    UserPromptSubmit shows new messages; SessionStart (after a compaction or a restart) shows every
-    message not yet marked done again, since the context that held them may be gone. A hook must
-    not break the agent's turn, so every failure is logged and the exit status stays 0.
+    UserPromptSubmit shows new messages; SessionStart (after a compaction or a restart) shows again
+    the ones read within the last day but not marked done, since the context that held them may be
+    gone, and marks nothing, since it starts no turn. A slash command is never shown or marked:
+    courier serve types it whole, the only form in which it runs. Stop, at the
+    end of a turn, blocks the stop with the new messages as the reason, so an agent that was
+    working gets them without anything typed into its pane; with none it lets the agent stop. A
+    hook must not break the agent's turn, so every failure is logged and the exit status stays 0.
     """
     try:
         raw = sys.stdin.read() if not sys.stdin.isatty() else ""
@@ -536,12 +549,13 @@ def inbox_hook(root: Path, name: str | None) -> int:
             *resume_for,
         ):
             return 0
-        messages = (
-            mailbox.pending(mailbox.load(root, name), again=event == "SessionStart")
-            if name in readers
-            else []
-        )
-        text = mailbox.hook_text(name, messages) if messages else ""
+        messages, notes, pointed = [], [], []
+        if name in readers:
+            pointed = mailbox.pointed_ids(payload.get("prompt") or "")
+            filed = mailbox.load_with(root, name, pointed)
+            messages = mailbox.pending(filed, again=event == "SessionStart")
+            notes = mailbox.repeat_notes(filed, pointed)
+        text = mailbox.hook_text(name, messages, notes, pointed) if messages or notes else ""
         if name in resume_for and event == "SessionStart":
             tasks, banner, _ = task_list(root)
             tasks = [t for t in tasks if name in {t["from"], t["to"]}]
@@ -550,11 +564,80 @@ def inbox_hook(root: Path, name: str | None) -> int:
         mailbox.log_hook(root, f"{name} {detail} shown={ids} bytes={len(text.encode())}")
         if not text:
             return 0
-        out = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+        if event == "Stop":
+            if not messages:
+                return 0
+            out = {"decision": "block", "reason": text}
+        else:
+            out = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
         print(json.dumps(out, ensure_ascii=False))
-        mailbox.mark(root, name, [m.id for m in messages], "shown", detail)
+        # Context added at SessionStart starts no turn: a new message stays new, so its item stays
+        # filed and courier types its pointer, whose prompt shows it again and starts the turn.
+        if event != "SessionStart":
+            mailbox.mark(root, name, [m.id for m in messages], "shown", detail)
     except Exception as exc:  # noqa: BLE001 - see the docstring
         print(f"courier inbox --hook: {exc!r}", file=sys.stderr)
+    return 0
+
+
+def inbox_wait(root: Path, name: str | None, seconds: float) -> int:
+    """For a Claude Code Stop hook with asyncRewake: wait in the background for a message filed
+    after the turn ended, print it on stderr and exit EXIT_WAKE, which starts a turn in an idle
+    session without anything typed into its pane.
+
+    Slash commands never wake the waiter and are not marked shown.
+    Messages already new when the wait starts are left to the Stop hook that blocks with them.
+    With ``name``, a wait started in another agent's pane returns at once, so the hook can be tried
+    on one agent of a shared config dir. One waiter per reader: each writes its own token to
+    mailbox/<name>.wait and a waiter whose token was replaced by a newer one exits 0, as it does
+    after ``seconds``. The waiter touches that file every poll, and while it is fresh courier
+    serve types no pointer line, so the message comes once.
+    """
+    if sys.stdin is not None and not sys.stdin.isatty():
+        sys.stdin.read()
+    try:
+        if name is None:
+            readers = config.load().mailbox.readers
+            if not readers or (name := own_name()) not in readers:
+                return 0
+        elif os.environ.get("HERDR_PANE_ID") and own_name() != name:
+            # A hook in a config dir several agents share, limited to one of them.
+            return 0
+        lock = mailbox.wait_path(root, name)
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        token = uuid.uuid4().hex
+        lock.write_text(token, encoding="utf-8")
+        path = mailbox.path_for(root, name)
+        before = {m.id for m in mailbox.pending(mailbox.load(root, name), again=False)}
+        mailbox.log_hook(root, f"{name} Stop/wait started pid={os.getpid()}")
+        seen = None
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            time.sleep(WAIT_POLL)
+            if lock.read_text(encoding="utf-8") != token:
+                mailbox.log_hook(root, f"{name} Stop/wait stepped aside pid={os.getpid()}")
+                return 0
+            # While this file is fresh, courier serve files new messages without a pointer line.
+            os.utime(lock)
+            stamp = path.stat().st_mtime_ns if path.exists() else None
+            if stamp == seen:
+                continue
+            seen = stamp
+            fresh = [
+                m
+                for m in mailbox.pending(mailbox.load(root, name), again=False)
+                if m.id not in before
+            ]
+            if fresh:
+                text = mailbox.hook_text(name, fresh)
+                print(text, file=sys.stderr)
+                mailbox.mark(root, name, [m.id for m in fresh], "shown", "Stop/wait")
+                ids = ",".join(m.id for m in fresh)
+                mailbox.log_hook(root, f"{name} Stop/wait shown={ids} bytes={len(text.encode())}")
+                return EXIT_WAKE
+        mailbox.log_hook(root, f"{name} Stop/wait timed out pid={os.getpid()}")
+    except Exception as exc:  # noqa: BLE001 - a failed wait must not wake the session
+        print(f"courier inbox --wait: {exc!r}", file=sys.stdout)
     return 0
 
 
@@ -562,6 +645,8 @@ def cmd_inbox(args: argparse.Namespace) -> int:
     root = state_dir()
     if args.hook:
         return inbox_hook(root, args.name)
+    if args.wait is not None:
+        return inbox_wait(root, args.name, args.wait)
     name = args.name or own_name()
     if name is None:
         print("courier: no agent name for this pane; pass one: courier inbox NAME", file=sys.stderr)
@@ -580,6 +665,9 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         if args.show
         else [m for m in messages if args.all or m.state != "done"]
     )
+    # A reader without a live hook reads by id from its pointer line: that is its delivery.
+    if args.show:
+        mailbox.mark(root, name, [m.id for m in chosen if m.state == "new"], "shown", "show")
     if args.json:
         print(
             json.dumps(
@@ -823,6 +911,15 @@ def main(argv: list[str] | None = None) -> int:
         "--hook",
         action="store_true",
         help="read a Claude Code hook payload on stdin and answer with open messages",
+    )
+    p.add_argument(
+        "--wait",
+        nargs="?",
+        type=float,
+        const=WAIT_SECONDS,
+        metavar="SECONDS",
+        help="for a Stop hook with asyncRewake: wait for the next message, print it on stderr and "
+        f"exit {EXIT_WAKE} (default {WAIT_SECONDS:.0f} s)",
     )
     p.set_defaults(func=cmd_inbox)
 

@@ -96,6 +96,17 @@ it is not running.
 
 ## Send conditions
 
+A Claude Code usage stop pauses delivery: a stop message ("You're out of usage credits", "You've
+hit your limit" and the like) as the last reply above the input box, below the last echoed
+prompt, within 15 non-empty lines. Status shows `usage stop in pane: <line>`: a mailbox pointer
+stays `filed` with its copy still new, and a plain message stays `waiting`, also when the stop
+appears after submit. Courier types no text or keys while the stop shows and reads the pane at
+most once a minute. The stop clears when a later prompt is echoed (someone switched the model)
+or the line leaves the pane. A stop line stays on screen after the limit resets and comes back
+with a resumed session, so every 10 minutes one held message is typed as a probe; if the stop
+answers it again, it is held again. Automatic continuation notices do not pause delivery. A
+Codex limit is not held: the message ends `rejected` (`codex_usage_limit`).
+
 All of these, observed again right before writing (a second `agent get` and box read):
 
 1. Agent status is `idle`, `done` or `working` (Claude Code queues a prompt that arrives while it
@@ -122,9 +133,12 @@ refusing or failing:
   session or runs another session is held the same way, by name.
 - Every 5 s courier looks the name up. When it is back with the session the messages were queued
   for (a resume, in any pane), the 10 oldest are queued to it and, if more are held, one line
-  `courier: N more held for you: courier inbox` follows them. Back with another session, nothing
-  is typed in; the held messages stay in `courier status` and, with the mailbox on, in
-  `courier inbox`. A pane without a session counts as missing.
+  `courier: N more held for you: courier inbox` follows them. For a mailbox reader, any returning
+  session gets the held messages rebound to it, 10 per lookup until none remain. Their text is
+  already in its mailbox; the normal delivery path types each pointer line or leaves it to a
+  live waiting hook. For other agents back with another session, nothing is typed in; the held
+  messages stay in `courier status` and, with the mailbox on, in `courier inbox`.
+  A pane without a session counts as missing.
 - A held message fails after `hold.ttl` seconds (4 h).
 - While messages are held, the agent named in `hold.summary_to` (boss for secretary, secretary
   for boss) gets one summary, such as `courier: boss missing since 13:20; held 3 (design 2,
@@ -142,7 +156,8 @@ refusing or failing:
 When the pane is ready and more messages wait behind the first, they go with it as one prompt,
 oldest first, so an agent that was busy gets one turn instead of one per message. Each part
 starts with the header line `courier inbox` uses, `--- <id> from <sender> at HH:MM ---`; a single
-message still goes as typed. The prompt stays within `delivery.merge_chars` (6000 characters) and
+message still goes as typed. For a mailbox reader each message is one pointer line instead
+([mailbox.md](mailbox.md#pointer-lines)). The prompt stays within `delivery.merge_chars` (6000 characters) and
 the rest go next time; a first message longer than that goes alone. A slash command such as
 `/compact` always goes alone, human messages (which are ahead of agent ones) are merged only with
 each other, and a message bound to another session or terminal, or backing off after a refused

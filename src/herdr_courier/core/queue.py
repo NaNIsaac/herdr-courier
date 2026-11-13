@@ -21,11 +21,16 @@ from typing import Any
 
 from .. import defaults, ledger, mailbox, probes, routes
 from .gate import Observation, check
-from .inputline import InputLine, LineState, classify, holds, matches, rejection
+from .inputline import OTHER_ESCAPE, SGR, InputLine, LineState, classify, holds, matches, rejection
 from .transport import Herdr, HerdrError, same_socket
+from .usage_stop import usage_stop
 
 VERIFY_SECONDS = 5.0
 MAX_ATTEMPTS = 5
+USAGE_RECHECK_SECONDS = 60
+# A stop line stays on screen after the limit resets, and a resumed session shows it again, so
+# one held message goes through this often to see whether the agent answers now.
+USAGE_PROBE_SECONDS = 600
 KEEP_FINISHED = 200
 # Each restart closes one journal generation; the older ones are the only delivery history.
 JOURNAL_KEEP = 10
@@ -42,6 +47,20 @@ RELEASE_AT_ONCE = 10
 LOOKUP_EVERY = 5.0
 # Starts the reason of a message whose route was not taken, so courier send can warn about it.
 ROUTE_MISSED = "not routed: "
+# How often filed messages are looked up in their readers' mailboxes, and how long one may stay
+# unshown before its pointer line is typed again, at most REWAKES times.
+MAILBOX_EVERY = 2.0
+REWAKE_SECONDS = 300.0
+REWAKES = 3
+# A reader seen busy and then idle this long with the message still unshown had no Stop hook to
+# bring it: the pointer line goes at once instead of after REWAKE_SECONDS.
+IDLE_WAKE_SECONDS = 10.0
+# A ghost whose text is still in the box gets Enter pressed again this often, at most this many
+# times, whenever the pane is idle, unfocused (a reader's pointer: focused too) and still holds
+# exactly that text.
+GHOST_ENTER_SECONDS = 60.0
+GHOST_ENTERS = 3
+FOCUSED_READER_GRACE = 30.0
 
 
 class State(StrEnum):
@@ -54,11 +73,15 @@ class State(StrEnum):
     CANCELLED = "cancelled"
     REJECTED = "rejected"
     GHOST = "ghost"
+    # In a mailbox reader's mailbox, not yet shown by its hook: sent once the hook shows it.
+    FILED = "filed"
 
 
 FINAL = frozenset({State.SENT, State.FAILED, State.CANCELLED, State.REJECTED, State.GHOST})
 # From the moment the write may have started; such an item is never written again.
 IN_FLIGHT = frozenset({State.SUBMITTING, State.VERIFYING})
+# Ends of a typed pointer line that leave its message in the mailbox, for the hook to bring.
+POINTER_ENDS = frozenset({State.SENT, State.GHOST, State.FAILED, State.REJECTED})
 
 
 @dataclass(kw_only=True)
@@ -141,14 +164,16 @@ def _hhmm(wall: float) -> str:
     return time.strftime("%H:%M", time.localtime(wall))
 
 
-def _command(text: str) -> bool:
-    """A slash command such as /compact, which the agent reads only as the whole prompt."""
-    return text.lstrip().startswith("/")
-
-
 def _framed(item: "Item") -> str:
     """``item`` as one part of a merged prompt, with the header line `courier inbox` uses."""
     return f"--- {item.id} from {item.source} at {_hhmm(item.created)} ---\n{item.text}"
+
+
+def pointer(item: "Item") -> str:
+    """The one line typed for a mailbox reader; its hook puts the text into the context."""
+    return (
+        f"[courier] {item.id} from {item.source}: in your mailbox, courier inbox --show {item.id}"
+    )
 
 
 @dataclass
@@ -204,6 +229,7 @@ class Dispatcher:
         membership_field: str = defaults.LEDGER_MEMBERSHIP_FIELD,
         routes_in: Path | None = None,
         merge_chars: int = defaults.DELIVERY_MERGE_CHARS,
+        pointer_for: Iterable[str] = (),
     ) -> None:
         """``settle_for`` maps an agent name to its between-turns settle time, or None (gate).
 
@@ -224,7 +250,12 @@ class Dispatcher:
 
         When a pane is ready and more messages wait for it, the next ones are typed in with the
         first as one prompt, each under its own header line, while the prompt stays within
-        ``merge_chars``; 0 types each alone. They end in the first one's state."""
+        ``merge_chars``; 0 types each alone. They end in the first one's state.
+
+        A message for an agent in ``pointer_for`` (mailbox readers, whose hook shows the text from
+        the mailbox) is typed as one ``pointer`` line, so the text reaches the agent once; a slash
+        command is still typed whole and marked done once sent. Already read or done messages
+        are finished without typing their pointer, including riders in a merged prompt."""
         self.herdr = herdr
         self.journal = journal
         self.clock = clock
@@ -249,6 +280,22 @@ class Dispatcher:
         self._submit_requests: dict[str, Future[Item]] = {}
         self._rejections_before: dict[str, str | None] = {}
         self.merge_chars = merge_chars
+        self.pointer_for = frozenset(pointer_for)
+        # Courier's own notices to a reader that could not be filed: typed in full instead.
+        self._unfiled: set[str] = set()
+        # Filed items: when they were filed or last woken, and how often they were woken again.
+        self._filed_at: dict[str, float] = {}
+        self._rewakes: dict[str, int] = {}
+        # Filed items no pointer line was typed for yet; of those, the ones whose reader was
+        # seen busy, and since when it has been idle again.
+        self._unpointed: set[str] = set()
+        self._reader_busy: set[str] = set()
+        self._idle_since: dict[str, float] = {}
+        # Filed items left to the reader's `courier inbox --wait`, woken when it ends without them.
+        self._for_waiter: set[str] = set()
+        # Ghosts that got Enter again: how often, and when last.
+        self._ghost_enters: dict[str, tuple[int, float]] = {}
+        self._mailbox_checked = -math.inf
         # For an item typed in with others: the merged prompt, and the ids that rode with it.
         self._carried: dict[str, str] = {}
         self._riders: dict[str, list[str]] = {}
@@ -258,6 +305,9 @@ class Dispatcher:
         self.queues: dict[str, list[str]] = {}
         self.holds: dict[str, Hold] = {}
         self.watch: dict[str, PaneWatch] = {}
+        self._usage_stops: dict[str, tuple[float, str | None]] = {}
+        # Per stopped pane: when the next probe may go, and the held item now going as one.
+        self._usage_probes: dict[str, tuple[float, str | None]] = {}
         self.missing: dict[str, Missing] = {}
         # The session each agent in hold_missing last had, for messages queued while it is gone.
         self.seen: dict[str, str | None] = {}
@@ -285,10 +335,13 @@ class Dispatcher:
         hold: bool = True,
         task: dict | None = None,
         item_id: str | None = None,
+        filed: bool = False,
     ) -> Item:
         """Queue ``text`` for ``target``. ``hold=False`` refuses instead of holding it for a
         missing agent, so courier's own summaries never wait on one another. ``item_id`` is one
-        the client chose, so files it copied for the message sit under the message's id."""
+        the client chose, so files it copied for the message sit under the message's id.
+        ``filed`` says the caller copies the item to the mailbox itself (a client's message, with
+        its attachments); anything else for a mailbox reader is filed here before it is typed."""
         if not text.strip():
             raise DispatchError("empty message")
         if text.rstrip().endswith("\\"):
@@ -317,6 +370,8 @@ class Dispatcher:
                     held = self._enqueue_held(
                         target, text, source, human, client_id, task=task, item_id=item_id
                     )
+                    if not filed:
+                        self._file(held)
                     return replace(held, reason=f"{note}; {held.reason}") if note else held
                 raise DispatchError(f"cannot resolve target {target!r}: {exc}") from exc
         session = (agent.get("agent_session") or {}).get("value")
@@ -343,6 +398,8 @@ class Dispatcher:
                 return known
             if task is not None:
                 task["dispatch_id"] = item.id
+            if not filed:
+                self._file(item)
             self._record(item, "queued", full=True, task=task)
             self.items[item.id] = item
             if task is not None:
@@ -350,6 +407,17 @@ class Dispatcher:
             self._push(item)
             self.lock.notify_all()
         return item
+
+    def _file(self, item: Item) -> None:
+        """Copy an item for a mailbox reader to its mailbox, so the pointer line typed for it
+        leads to the text; one that cannot be copied is typed in full instead."""
+        if not self._pointed(item):
+            return
+        try:
+            mailbox.add(self.journal.parent, item)
+        except OSError as exc:
+            self._unfiled.add(item.id)
+            self.log(f"courier: {item.id} for {item.target} not filed, typed in full: {exc}")
 
     def _push(self, item: Item, *, in_order: bool = False) -> None:
         """Queue ``item`` on its pane; ``in_order`` places a moved item among the waiting ones
@@ -429,6 +497,7 @@ class Dispatcher:
                 client_id=client_id,
                 task=task,
                 item_id=item_id,
+                filed=True,
             )
             self._task_report(source, text)
             return item
@@ -441,6 +510,7 @@ class Dispatcher:
                 f"REMINDER {task['key']}, ignore if running",
                 source=source,
                 client_id=client_id,
+                filed=True,
             )
             task["reminded_at"] = now
         else:
@@ -691,7 +761,9 @@ class Dispatcher:
         )
         if mailbox.add(self.journal.parent, item):
             try:
-                self.enqueue(self.notify_to, text, source="courier", client_id=client_id)
+                self.enqueue(
+                    self.notify_to, text, source="courier", client_id=client_id, item_id=item.id
+                )
             except DispatchError as exc:
                 self.log(f"{self.notify_to} notice kept in mailbox: {exc}")
 
@@ -889,7 +961,7 @@ class Dispatcher:
 
         A missing session may be the same agent restarting (a resume), so the item waits for it
         until ``hold_ttl``; another session fails it, since it is another agent. For an agent in
-        ``hold_missing`` both wait, by name, and only a return with the same session sends it.
+        ``hold_missing`` both wait, by name; mailbox readers can return with any session.
         """
         if not (verdict.fatal or verdict.lost):
             return False
@@ -954,7 +1026,7 @@ class Dispatcher:
                 if item is None:
                     raise DispatchError(f"no item {item_id}")
                 left = deadline - time.monotonic()
-                if item.state in FINAL or left <= 0:
+                if item.state in FINAL or item.state is State.FILED or left <= 0:
                     return item
                 self.lock.wait(min(left, 1.0))
 
@@ -995,9 +1067,15 @@ class Dispatcher:
                 for name, m in self.missing.items()
                 if pane is None and m.items
             }
+            filed = [
+                i.as_dict()
+                for i in self.items.values()
+                if i.state is State.FILED and (pane is None or i.pane_id == pane)
+            ]
             return {
                 "panes": panes,
                 "held": held,
+                "filed": filed,
                 "recent": [i.as_dict() for i in finished],
                 "routes": dict(self.routes),
             }
@@ -1019,6 +1097,8 @@ class Dispatcher:
         self._apply_routes()
         if self.missing:
             self._look_for_missing()
+        if self._filed_at and self.clock() - self._mailbox_checked >= MAILBOX_EVERY:
+            self._check_filed()
         with self.lock:
             heads = [
                 (pane_id, self.items[queue[0]]) for pane_id, queue in self.queues.items() if queue
@@ -1031,6 +1111,152 @@ class Dispatcher:
                     self._stall(item, f"dispatcher error: {exc!r}")
         if self._ghosts:
             self._report_ghosts()
+        if self._ghosted:
+            self._enter_ghosts()
+
+    def _enter_ghosts(self) -> None:
+        """Press Enter again on courier's own text left in a box, so an idle agent is not left
+        with it until someone looks. The same guards as the first retry apply: exactly the
+        message in the box, an idle agent with the same session, no hold, and no focus unless
+        the text is a reader's pointer line."""
+        now = self.clock()
+        with self.lock:
+            due = [
+                self.items[i]
+                for i in self._ghosted
+                if i in self.items
+                and self.items[i].state in (State.GHOST, State.FILED)
+                and self.items[i].pane_id
+                and self._ghost_enters.get(i, (0, -math.inf))[0] < GHOST_ENTERS
+                and now - self._ghost_enters.get(i, (0, -math.inf))[1] >= GHOST_ENTER_SECONDS
+            ]
+        for item in due:
+            count = self._ghost_enters.get(item.id, (0, 0.0))[0] + 1
+            self._ghost_enters[item.id] = (count, now)
+            try:
+                self._retry_enter(item, manual=True)
+            except DispatchError as exc:
+                self.log(f"courier: {item.id} left in {item.pane_id}, Enter not pressed: {exc}")
+                continue
+            self.log(f"courier: pressed Enter again on {item.id} left in {item.pane_id}")
+
+    def _reader_state(self, item: Item) -> str | None:
+        """The mailbox state (new, read, done) of an item typed as a pointer line, or None."""
+        if not self._pointed(item):
+            return None
+        try:
+            filed = mailbox.load(self.journal.parent, item.target)
+        except OSError:
+            return None
+        return next((m.state for m in filed if m.id == item.id), None)
+
+    def _finish_shown(self, item: Item) -> bool:
+        """Finish an already shown pointer message without typing it (lock held)."""
+        if self._reader_state(item) not in ("read", "done"):
+            return False
+        self._forget_filed(item.id)
+        self._rewakes.pop(item.id, None)
+        self._finish(item, State.SENT, f"shown to {item.target} by its hook")
+        return True
+
+    def _await_reader(self, item: Item, reason: str) -> bool:
+        """Leave ``item`` in its reader's mailbox for the hook to show (lock held). False when
+        it is not a filed, unshown pointer message, which then goes on as typed text."""
+        if self._reader_state(item) != "new":
+            return False
+        self._unqueue(item)
+        self._set(item, State.FILED, reason)
+        self._filed_at[item.id] = self.clock()
+        self._unpointed.add(item.id)
+        return True
+
+    def _check_filed(self) -> None:
+        """End each filed message its reader's hook has shown; type the pointer line again for
+        one left unshown REWAKE_SECONDS, at most REWAKES times, and at once for one whose reader
+        was busy and has been idle IDLE_WAKE_SECONDS without its Stop hook bringing it."""
+        with self.lock:
+            self._mailbox_checked = now = self.clock()
+            filed = [self.items[i] for i in self._filed_at if i in self.items]
+            stale = [i for i in self._filed_at if i not in self.items]
+            for item_id in stale:
+                self._forget_filed(item_id)
+        states: dict[str, dict[str, str]] = {}
+        for target in {i.target for i in filed}:
+            try:
+                states[target] = {m.id: m.state for m in mailbox.load(self.journal.parent, target)}
+            except OSError:
+                states[target] = {}
+        wall = self.wall()
+        live = {
+            i.id
+            for i in filed
+            if i.id in self._for_waiter and mailbox.waiter_live(self.journal.parent, i.target, wall)
+        }
+        status: dict[str, str] = {}
+        for pane_id in {i.pane_id for i in filed if i.pane_id}:
+            try:
+                status[pane_id] = self.herdr.agent_get(pane_id).get("agent_status", "unknown")
+            except HerdrError:
+                continue
+        with self.lock:
+            for item in filed:
+                if item.state is not State.FILED:
+                    self._forget_filed(item.id)
+                    continue
+                state = states[item.target].get(item.id)
+                if state in ("read", "done"):
+                    self._forget_filed(item.id)
+                    self._rewakes.pop(item.id, None)
+                    self._finish(item, State.SENT, f"shown to {item.target} by its hook")
+                    continue
+                if not item.pane_id:
+                    continue
+                if item.reason.startswith("usage stop in pane: "):
+                    if not self._usage_blocked(item):
+                        self._forget_filed(item.id)
+                        self._wake(item, "usage stop cleared")
+                    continue
+                if item.id in self._for_waiter and item.id not in live:
+                    self._forget_filed(item.id)
+                    self._wake(item, "its reader's waiting hook ended without it, pointer typed")
+                elif self._reader_idle_long(item, status.get(item.pane_id), now):
+                    self._forget_filed(item.id)
+                    self._wake(item, "unshown after the reader went idle, pointer typed")
+                elif (
+                    now - self._filed_at[item.id] >= REWAKE_SECONDS
+                    and self._rewakes.get(item.id, 0) < REWAKES
+                ):
+                    self._rewakes[item.id] = self._rewakes.get(item.id, 0) + 1
+                    self._forget_filed(item.id)
+                    self._wake(
+                        item, f"unshown, pointer typed again ({self._rewakes[item.id]}/{REWAKES})"
+                    )
+
+    def _reader_idle_long(self, item: Item, status: str | None, now: float) -> bool:
+        """Whether the reader of filed ``item`` was seen busy and has since been idle for
+        IDLE_WAKE_SECONDS (lock held)."""
+        if status in ("working", "blocked") and item.id in self._unpointed:
+            self._reader_busy.add(item.id)
+            self._idle_since.pop(item.id, None)
+            return False
+        if item.id not in self._unpointed:
+            return False
+        if status not in ("idle", "done") or item.id not in self._reader_busy:
+            return False
+        since = self._idle_since.setdefault(item.id, now)
+        return now - since >= IDLE_WAKE_SECONDS
+
+    def _forget_filed(self, item_id: str) -> None:
+        self._for_waiter.discard(item_id)
+        self._filed_at.pop(item_id, None)
+        self._unpointed.discard(item_id)
+        self._reader_busy.discard(item_id)
+        self._idle_since.pop(item_id, None)
+
+    def _wake(self, item: Item, reason: str) -> None:
+        item.retry_at = 0.0
+        self._set(item, State.QUEUED, reason)
+        self._push(item, in_order=True)
 
     def _report_ghosts(self) -> None:
         """Tell someone other than the receiver that courier text was left in its input box.
@@ -1095,26 +1321,30 @@ class Dispatcher:
         session = agent and (agent.get("agent_session") or {}).get("value")
         if session:
             self.seen[name] = session
-            if m.back is None:
+            reader = name in self.pointer_for
+            if m.back is None or reader:
                 m.back = session
-                # Only a resume of the session the messages were queued for gets them typed in.
-                ready = [i for i in m.items if self.items[i].session == session]
+                ready = [i for i in m.items if reader or self.items[i].session == session]
                 for item_id in ready[:RELEASE_AT_ONCE]:
                     item = self.items[item_id]
                     m.items.remove(item_id)
                     item.pane_id, item.terminal = agent["pane_id"], agent.get("terminal_id")
                     item.held_until = None
+                    item.session = session
                     self.queues.setdefault(item.pane_id, []).append(item_id)
                     self._set(
                         item,
                         State.QUEUED,
-                        f"released: {name} is back",
+                        f"released: {name} is back; in its mailbox"
+                        if reader
+                        else f"released: {name} is back",
                         pane_id=item.pane_id,
+                        session=session,
                         terminal=item.terminal,
                         held_until=None,
                     )
                     m.released += 1
-                if m.released and m.items:
+                if m.released and m.items and not reader:
                     line = f"courier: {len(m.items)} more held for you: `courier inbox`"
         # Kept while a summary still has news for the other agent; _send_summaries drops it then.
         if not m.items and not m.expired and (m.summary_at is None or name not in self.summary_to):
@@ -1167,7 +1397,9 @@ class Dispatcher:
         if m.expired:
             parts.append(f"{len(m.expired)} failed after {self.hold_ttl / 3600:g} h held")
         if m.back is not None:
-            if m.released:
+            if m.released and name in self.pointer_for:
+                parts.append(f"back; {m.released} filed for it")
+            elif m.released:
                 parts.append(f"back with the same session; {m.released} typed in")
             elif held:
                 parts.append(f"back with a new session; the held stay held: `courier inbox {name}`")
@@ -1179,6 +1411,9 @@ class Dispatcher:
         now = self.clock()
         if item.retry_at > now:
             return
+        with self.lock:
+            if self._usage_blocked(item):
+                return
         obs = self._observe(item)
         if obs is None:
             return
@@ -1186,6 +1421,8 @@ class Dispatcher:
         settle = None if self.settle_for is None else self.settle_for(obs.name)
         with self.lock:
             if item.state in FINAL:
+                return
+            if self._usage_blocked(item):
                 return
             verifying = item.state in IN_FLIGHT
             retry_enter = self._verify(item, obs, now) if verifying else False
@@ -1196,19 +1433,55 @@ class Dispatcher:
         with self.lock:
             if item.state in FINAL:
                 return
+            if self._finish_shown(item):
+                return
+            empty_for = self._empty_for(pane_id, obs.line, now)
             verdict = check(
                 obs,
                 session=item.session,
                 hold=self._hold_reason(pane_id, now),
-                empty_for=self._empty_for(pane_id, obs.line, now),
+                empty_for=empty_for,
                 settle=settle,
                 settled_for=self._settled_for(pane_id, obs, now),
                 terminal=item.terminal,
             )
             if self._refused(item, verdict):
                 return
+            # A reader with a live `courier inbox --wait` is woken by it; a pointer line too
+            # would bring the message twice.
+            if (
+                self._pointed(item)
+                and mailbox.waiter_live(self.journal.parent, item.target, self.wall())
+                and self._await_reader(item, "in the mailbox for the reader's waiting hook")
+            ):
+                self._for_waiter.add(item.id)
+                return
+            # A reader that is working gets the message from its Stop hook, and one whose box
+            # holds other text from the prompt-submit hook when that text is sent: neither
+            # waits for the box, and the messages behind it do not wait either.
+            if (
+                not verdict.ok
+                and (obs.status in ("working", "blocked") or obs.line.state is LineState.TYPED)
+                and self._await_reader(item, "in the mailbox for the hook: " + verdict.reason)
+            ):
+                return
             if not verdict.ok:
                 self._set(item, State.WAITING, verdict.reason)
+                return
+            # One pane is always focused, often an idle agent nobody watches, so focus cannot
+            # stop the pointer line that wakes it. A longer empty box narrows the clash with
+            # someone starting to type, which costs only the pointer: the hook brings the text.
+            if (
+                obs.focused
+                and self._pointed(item)
+                and (empty_for is None or empty_for < FOCUSED_READER_GRACE)
+            ):
+                self._set(
+                    item,
+                    State.WAITING,
+                    f"debounce: focused reader, input must stay empty for "
+                    f"{FOCUSED_READER_GRACE:.0f} s",
+                )
                 return
         # Observe again right before writing, all conditions and not only the box, to narrow
         # the window in which a human, a hold or a new agent could appear.
@@ -1219,6 +1492,8 @@ class Dispatcher:
             if item.state in FINAL:
                 return
             now = self.clock()
+            if self._usage_blocked(item):
+                return
             verdict = check(
                 final,
                 session=item.session,
@@ -1234,6 +1509,8 @@ class Dispatcher:
                 self._empty_for(pane_id, final.line, now)
                 self._set(item, State.WAITING, f"{verdict.reason} (at final check)")
                 return
+            if self._finish_shown(item):
+                return
             # Journalled before the write: after a crash from here on the item is replayed as
             # FAILED and a cancel is refused, so the message can never be written twice. The
             # same holds for each message typed in with it.
@@ -1243,7 +1520,7 @@ class Dispatcher:
                     self._set(rider, State.SUBMITTING, f"writing to the pane with {item.id}")
                     self._riders.setdefault(item.id, []).append(rider.id)
                 if riders:
-                    self._carried[item.id] = "\n\n".join(_framed(i) for i in (item, *riders))
+                    self._carried[item.id] = self._merged((item, *riders))
                     self._set(
                         item,
                         State.SUBMITTING,
@@ -1278,8 +1555,22 @@ class Dispatcher:
             self._set(item, State.VERIFYING, "submitted, confirming")
 
     def _text(self, item: Item) -> str:
-        """What is typed for ``item``: its text, or the merged prompt it leads."""
-        return self._carried.get(item.id, item.text)
+        """What is typed for ``item``: its text or pointer line, or the merged prompt it leads."""
+        if item.id in self._carried:
+            return self._carried[item.id]
+        return pointer(item) if self._pointed(item) else item.text
+
+    def _pointed(self, item: Item) -> bool:
+        return (
+            item.target in self.pointer_for
+            and item.id not in self._unfiled
+            and not mailbox.is_command(item.text)
+        )
+
+    def _merged(self, items: tuple[Item, ...]) -> str:
+        if all(self._pointed(i) for i in items):
+            return "\n".join(pointer(i) for i in items)
+        return "\n\n".join(pointer(i) if self._pointed(i) else _framed(i) for i in items)
 
     def _riders_of(self, pane_id: str, head: Item) -> list[Item]:
         """The messages queued right behind ``head`` that go in the same prompt (lock held).
@@ -1287,15 +1578,23 @@ class Dispatcher:
         They keep their order, so the first one that cannot go stops the rest: one in flight or
         backing off, a human message behind agent ones or the reverse, one bound to another
         receiver, one about to go back to its unrouted name, a slash command, or one past the
-        size limit. A slash command at the head goes alone too."""
+        size limit. Already shown pointer messages are finished and omitted. A slash command at
+        the head goes alone too."""
         queue = self.queues.get(pane_id, [])
-        if self.merge_chars <= 0 or _command(head.text) or not queue or queue[0] != head.id:
+        if (
+            self.merge_chars <= 0
+            or mailbox.is_command(head.text)
+            or not queue
+            or queue[0] != head.id
+        ):
             return []
         now = self.clock()
         size = len(_framed(head))
         riders = []
         for item_id in queue[1:]:
             item = self.items[item_id]
+            if self._finish_shown(item):
+                continue
             size += 2 + len(_framed(item))
             if (
                 item.state not in (State.QUEUED, State.WAITING)
@@ -1303,7 +1602,7 @@ class Dispatcher:
                 or item.human != head.human
                 or (item.session, item.terminal) != (head.session, head.terminal)
                 or item.id in self._fallback
-                or _command(item.text)
+                or mailbox.is_command(item.text)
                 or size > self.merge_chars
             ):
                 break
@@ -1321,7 +1620,43 @@ class Dispatcher:
                 # Not written; a restart before the next journal line fails it as in flight.
                 rider.state, rider.reason = State.WAITING, reason
 
+    def _usage_blocked(self, item: Item) -> bool:
+        """Hold ``item`` while its pane shows a usage stop (lock held): a pointer stays filed,
+        other text waits. The pane is read again at most once a minute; the last screen read
+        before or after typing counts as a fresh read."""
+        now = self.clock()
+        checked, line = self._usage_stops.get(item.pane_id, (-math.inf, None))
+        if line and now - checked >= USAGE_RECHECK_SECONDS:
+            try:
+                screen = self.herdr.read_ansi(item.pane_id, lines=40)
+            except HerdrError:
+                self._usage_stops[item.pane_id] = (now, line)
+            else:
+                line = usage_stop(OTHER_ESCAPE.sub("", SGR.sub("", screen)))
+                self._usage_stops[item.pane_id] = (now, line)
+        if not line:
+            self._usage_probes.pop(item.pane_id, None)
+            return False
+        due, probe = self._usage_probes.setdefault(item.pane_id, (now + USAGE_PROBE_SECONDS, None))
+        if item.state in IN_FLIGHT:
+            if probe == item.id:
+                self._usage_probes[item.pane_id] = (due, None)
+        elif probe == item.id:
+            return False
+        elif now >= due:
+            self._usage_probes[item.pane_id] = (now + USAGE_PROBE_SECONDS, item.id)
+            return False
+        reason = f"usage stop in pane: {line}"
+        riders = self._riders.get(item.id, []).copy()
+        self._unmerge(item, reason)
+        for current in (item, *(self.items[i] for i in riders)):
+            if not self._await_reader(current, reason):
+                self._set(current, State.WAITING, reason)
+        return True
+
     def _verify(self, item: Item, obs: Observation, now: float) -> bool:
+        if self._usage_blocked(item):
+            return False
         text = self._text(item)
         if obs.rejection and obs.rejection != self._rejections_before.get(item.id):
             self._finish(item, State.REJECTED, obs.rejection)
@@ -1353,6 +1688,10 @@ class Dispatcher:
             if final is None:
                 self._finish(item, State.GHOST, "ghost: cannot confirm safe Enter retry")
                 return
+            if self._usage_blocked(item):
+                if manual:
+                    raise DispatchError(item.reason)
+                return
             if final.rejection:
                 self._finish(item, State.REJECTED, final.rejection)
                 if manual:
@@ -1366,6 +1705,7 @@ class Dispatcher:
             if (
                 final.status not in ("idle", "done")
                 or final.focused
+                and not self._pointed(item)
                 or self._hold_reason(item.pane_id, self.clock())
                 or not (item.session or item.terminal)
                 or item.session
@@ -1457,7 +1797,7 @@ class Dispatcher:
         text = self._text(item)
         if snapshot is None:
             agent = self.herdr.agent_get(item.pane_id)
-            lines = min(256, max(12, text.count("\n") + 7))
+            lines = min(256, max(40, text.count("\n") + 7))
             screen = self.herdr.read_ansi(item.pane_id, lines=lines)
         else:
             agent, screen = snapshot
@@ -1469,6 +1809,10 @@ class Dispatcher:
         ):
             screen = self.herdr.read_ansi(item.pane_id, lines=256)
             line = classify(screen, queued=text)
+        self._usage_stops[item.pane_id] = (
+            self.clock(),
+            usage_stop(OTHER_ESCAPE.sub("", SGR.sub("", screen))),
+        )
         return Observation(
             status=agent.get("agent_status", "unknown"),
             session=(agent.get("agent_session") or {}).get("value"),
@@ -1487,6 +1831,15 @@ class Dispatcher:
             with self.lock:
                 if item.state in IN_FLIGHT:
                     if self.clock() >= item.verify_until:
+                        try:
+                            screen = self.herdr.read_ansi(item.pane_id, lines=40)
+                        except HerdrError:
+                            pass
+                        else:
+                            self._usage_stops[item.pane_id] = (
+                                self.clock(),
+                                usage_stop(OTHER_ESCAPE.sub("", SGR.sub("", screen))),
+                            )
                         self._finish(item, State.SENT, f"unconfirmed: cannot observe: {exc}")
                     return None
                 if exc.code in TARGET_GONE and item.routed_from:
@@ -1634,7 +1987,11 @@ class Dispatcher:
             if not (changed or fallback):
                 return
             waiting = sorted(
-                (i for i in self.items.values() if i.state not in FINAL | IN_FLIGHT),
+                (
+                    i
+                    for i in self.items.values()
+                    if i.state not in FINAL | IN_FLIGHT and i.state is not State.FILED
+                ),
                 key=lambda i: i.created,
             )
         for item in waiting:
@@ -1733,9 +2090,25 @@ class Dispatcher:
         self.lock.notify_all()
 
     def _finish(self, item: Item, state: State, reason: str) -> None:
+        """End delivery; sent reader commands are done, unshown pointer messages stay filed."""
+        if state is State.SENT and not reason.startswith("shown to ") and self._usage_blocked(item):
+            return
+        ended, rider = state, reason.startswith("with ")
+        # A pointer line only wakes the reader: its message is sent when the hook shows it, so
+        # however the typing ended, an unshown message stays filed rather than counted or lost.
+        if state in POINTER_ENDS and self._reader_state(item) == "new":
+            state, reason = State.FILED, f"pointer {state.value}: {reason}"
+            self._filed_at[item.id] = self.clock()
+        if (
+            state is State.SENT
+            and item.target in self.pointer_for
+            and mailbox.is_command(item.text)
+        ):
+            mailbox.mark(self.journal.parent, item.target, [item.id], "done", "serve")
         self._set(item, state, reason)
+        state = ended
         # A rider's text is part of its head's, which is reported for both.
-        if state is State.GHOST and item.id not in self._ghosted and not reason.startswith("with "):
+        if state is State.GHOST and item.id not in self._ghosted and not rider:
             self._ghosted.add(item.id)
             self._ghosts.append(item.id)
         queue = self.queues.get(item.pane_id, [])
@@ -1931,9 +2304,7 @@ class Dispatcher:
             ids = riders.get(item.id, [])
             if item.state is State.GHOST and ids and all(i in self.items for i in ids):
                 self._riders[item.id] = ids
-                self._carried[item.id] = "\n\n".join(
-                    _framed(i) for i in (item, *(self.items[r] for r in ids))
-                )
+                self._carried[item.id] = self._merged((item, *(self.items[r] for r in ids)))
         for item in kept:
             self._record(item, item.reason, full=True)
         for item in pending:
@@ -1948,7 +2319,13 @@ class Dispatcher:
                 missing.items.append(item.id)
                 self._record(item, item.reason, full=True)
                 continue
-            if item.state in IN_FLIGHT:
+            if item.state is State.FILED or (
+                item.state in IN_FLIGHT and self._reader_state(item) == "new"
+            ):
+                # Its text is in the mailbox, which the hook shows whatever the pane got.
+                item.state = State.FILED
+                self._filed_at[item.id] = self.clock()
+            elif item.state in IN_FLIGHT:
                 # The write may have happened before the restart and was not confirmed:
                 # delivery is unknown, and writing again could duplicate it.
                 item.reason = f"dispatcher restarted while {item.state}; delivery unknown"

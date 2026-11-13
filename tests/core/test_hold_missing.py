@@ -7,12 +7,13 @@ from herdr_courier.core.queue import (
     Dispatcher,
     DispatchError,
     State,
+    pointer,
 )
 
 
 @pytest.fixture
 def failover(herdr, clock, tmp_path):
-    def make() -> Dispatcher:
+    def make(*, pointer_for=()) -> Dispatcher:
         return Dispatcher(
             herdr,
             tmp_path / "journal.jsonl",
@@ -23,6 +24,7 @@ def failover(herdr, clock, tmp_path):
             summary_to={"boss": "secretary", "secretary": "boss"},
             # Each message alone, so a test reads the order they were typed in.
             merge_chars=0,
+            pointer_for=pointer_for,
         )
 
     return make
@@ -121,6 +123,40 @@ def test_boss_back_with_a_new_session_gets_nothing_typed_in(herdr, failover, run
     d.enqueue("boss", "fresh", source="lane")
     run(d, 3)
     assert back.submitted == ["fresh"]
+
+
+@pytest.mark.parametrize("count", [2, RELEASE_AT_ONCE * 2 + 2])
+def test_reader_back_with_a_new_session_gets_each_held_pointer_once(
+    herdr, failover, run, clock, count
+):
+    sec = herdr.add("w1:p2", "secretary")
+    d = failover(pointer_for=("boss",))
+    boss_gone_after_one_message(herdr, d, run)
+    items = [d.enqueue("boss", f"report {n}", source="lane") for n in range(count)]
+    run(d, 3)
+    sec.status = "idle"
+    back = boss_back(herdr, session="s7")
+    back.terminal = "new-terminal"
+    clock.now += 5
+    d.tick()
+    pending = d.status()["held"].get("boss", {}).get("pending", [])
+    assert len(pending) == max(0, count - RELEASE_AT_ONCE)
+    assert all(item.session == "s7" for item in items[:RELEASE_AT_ONCE])
+    assert all(item.terminal == "new-terminal" for item in items[:RELEASE_AT_ONCE])
+    for _ in range(count + 3):
+        run(d, 3)
+        back.status = "idle"
+    # Same session and terminal, so the pointer lines may share a prompt; each comes once.
+    # Each goes once: as a pointer line, or filed for the reader's hook while it is busy.
+    typed = [line for prompt in back.submitted for line in prompt.splitlines()]
+    assert typed and len(typed) == len(set(typed))
+    assert set(typed) <= {pointer(item) for item in items}
+    assert all(item.state in (State.SENT, State.FILED) for item in items)
+    assert all(item.session == "s7" and item.held_until is None for item in items)
+    assert all(item.pane_id == "w1:p9" and item.terminal == "new-terminal" for item in items)
+    assert not d.status()["held"].get("boss", {}).get("pending")
+    assert f"back; {min(count, RELEASE_AT_ONCE)} filed for it" in sec.submitted[-1]
+    assert "the held stay held" not in sec.submitted[-1]
 
 
 def test_a_held_message_fails_after_the_ttl_and_the_summary_says_so(herdr, failover, run, clock):

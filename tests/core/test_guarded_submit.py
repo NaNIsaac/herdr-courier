@@ -8,6 +8,8 @@ from herdr_courier.core.queue import Dispatcher, DispatchError, State, WrongServ
 
 
 def test_submit_is_worker_owned_and_exact_without_pasting(herdr, make_dispatcher, run, monkeypatch):
+    # About the first Enter retry; later Enters on a ghost are tested in test_ghost_enter.py.
+    monkeypatch.setattr("herdr_courier.core.queue.GHOST_ENTERS", 0)
     pane = herdr.add("w1", submit_mode="stuck", terminal="term")
     dispatcher = make_dispatcher()
     item = dispatcher.enqueue("w1", "exact courier body", source="test")
@@ -139,7 +141,9 @@ def test_failed_final_journal_write_keeps_item_in_its_queue(
     assert item.id in dispatcher.queues["w1"]
 
 
-def test_recoverable_ghost_cannot_cross_herdr_servers(herdr, clock, tmp_path, run):
+def test_recoverable_ghost_cannot_cross_herdr_servers(herdr, clock, tmp_path, run, monkeypatch):
+    # About the first Enter retry; later Enters on a ghost are tested in test_ghost_enter.py.
+    monkeypatch.setattr("herdr_courier.core.queue.GHOST_ENTERS", 0)
     pane = herdr.add("w1", submit_mode="stuck", terminal="term")
     dispatcher = Dispatcher(
         herdr, tmp_path / "journal", clock=clock, server="socket-a", log=lambda _: None

@@ -21,11 +21,16 @@ from typing import Any
 
 from .. import defaults, ledger, mailbox, probes, routes
 from .gate import Observation, check
-from .inputline import InputLine, LineState, classify, holds, matches, rejection
+from .inputline import OTHER_ESCAPE, SGR, InputLine, LineState, classify, holds, matches, rejection
 from .transport import Herdr, HerdrError, same_socket
+from .usage_stop import usage_stop
 
 VERIFY_SECONDS = 5.0
 MAX_ATTEMPTS = 5
+USAGE_RECHECK_SECONDS = 60
+# A stop line stays on screen after the limit resets, and a resumed session shows it again, so
+# one held message goes through this often to see whether the agent answers now.
+USAGE_PROBE_SECONDS = 600
 KEEP_FINISHED = 200
 # Each restart closes one journal generation; the older ones are the only delivery history.
 JOURNAL_KEEP = 10
@@ -300,6 +305,9 @@ class Dispatcher:
         self.queues: dict[str, list[str]] = {}
         self.holds: dict[str, Hold] = {}
         self.watch: dict[str, PaneWatch] = {}
+        self._usage_stops: dict[str, tuple[float, str | None]] = {}
+        # Per stopped pane: when the next probe may go, and the held item now going as one.
+        self._usage_probes: dict[str, tuple[float, str | None]] = {}
         self.missing: dict[str, Missing] = {}
         # The session each agent in hold_missing last had, for messages queued while it is gone.
         self.seen: dict[str, str | None] = {}
@@ -1203,6 +1211,11 @@ class Dispatcher:
                     continue
                 if not item.pane_id:
                     continue
+                if item.reason.startswith("usage stop in pane: "):
+                    if not self._usage_blocked(item):
+                        self._forget_filed(item.id)
+                        self._wake(item, "usage stop cleared")
+                    continue
                 if item.id in self._for_waiter and item.id not in live:
                     self._forget_filed(item.id)
                     self._wake(item, "its reader's waiting hook ended without it, pointer typed")
@@ -1398,6 +1411,9 @@ class Dispatcher:
         now = self.clock()
         if item.retry_at > now:
             return
+        with self.lock:
+            if self._usage_blocked(item):
+                return
         obs = self._observe(item)
         if obs is None:
             return
@@ -1405,6 +1421,8 @@ class Dispatcher:
         settle = None if self.settle_for is None else self.settle_for(obs.name)
         with self.lock:
             if item.state in FINAL:
+                return
+            if self._usage_blocked(item):
                 return
             verifying = item.state in IN_FLIGHT
             retry_enter = self._verify(item, obs, now) if verifying else False
@@ -1474,6 +1492,8 @@ class Dispatcher:
             if item.state in FINAL:
                 return
             now = self.clock()
+            if self._usage_blocked(item):
+                return
             verdict = check(
                 final,
                 session=item.session,
@@ -1600,7 +1620,43 @@ class Dispatcher:
                 # Not written; a restart before the next journal line fails it as in flight.
                 rider.state, rider.reason = State.WAITING, reason
 
+    def _usage_blocked(self, item: Item) -> bool:
+        """Hold ``item`` while its pane shows a usage stop (lock held): a pointer stays filed,
+        other text waits. The pane is read again at most once a minute; the last screen read
+        before or after typing counts as a fresh read."""
+        now = self.clock()
+        checked, line = self._usage_stops.get(item.pane_id, (-math.inf, None))
+        if line and now - checked >= USAGE_RECHECK_SECONDS:
+            try:
+                screen = self.herdr.read_ansi(item.pane_id, lines=40)
+            except HerdrError:
+                self._usage_stops[item.pane_id] = (now, line)
+            else:
+                line = usage_stop(OTHER_ESCAPE.sub("", SGR.sub("", screen)))
+                self._usage_stops[item.pane_id] = (now, line)
+        if not line:
+            self._usage_probes.pop(item.pane_id, None)
+            return False
+        due, probe = self._usage_probes.setdefault(item.pane_id, (now + USAGE_PROBE_SECONDS, None))
+        if item.state in IN_FLIGHT:
+            if probe == item.id:
+                self._usage_probes[item.pane_id] = (due, None)
+        elif probe == item.id:
+            return False
+        elif now >= due:
+            self._usage_probes[item.pane_id] = (now + USAGE_PROBE_SECONDS, item.id)
+            return False
+        reason = f"usage stop in pane: {line}"
+        riders = self._riders.get(item.id, []).copy()
+        self._unmerge(item, reason)
+        for current in (item, *(self.items[i] for i in riders)):
+            if not self._await_reader(current, reason):
+                self._set(current, State.WAITING, reason)
+        return True
+
     def _verify(self, item: Item, obs: Observation, now: float) -> bool:
+        if self._usage_blocked(item):
+            return False
         text = self._text(item)
         if obs.rejection and obs.rejection != self._rejections_before.get(item.id):
             self._finish(item, State.REJECTED, obs.rejection)
@@ -1631,6 +1687,10 @@ class Dispatcher:
                 return
             if final is None:
                 self._finish(item, State.GHOST, "ghost: cannot confirm safe Enter retry")
+                return
+            if self._usage_blocked(item):
+                if manual:
+                    raise DispatchError(item.reason)
                 return
             if final.rejection:
                 self._finish(item, State.REJECTED, final.rejection)
@@ -1737,7 +1797,7 @@ class Dispatcher:
         text = self._text(item)
         if snapshot is None:
             agent = self.herdr.agent_get(item.pane_id)
-            lines = min(256, max(12, text.count("\n") + 7))
+            lines = min(256, max(40, text.count("\n") + 7))
             screen = self.herdr.read_ansi(item.pane_id, lines=lines)
         else:
             agent, screen = snapshot
@@ -1749,6 +1809,10 @@ class Dispatcher:
         ):
             screen = self.herdr.read_ansi(item.pane_id, lines=256)
             line = classify(screen, queued=text)
+        self._usage_stops[item.pane_id] = (
+            self.clock(),
+            usage_stop(OTHER_ESCAPE.sub("", SGR.sub("", screen))),
+        )
         return Observation(
             status=agent.get("agent_status", "unknown"),
             session=(agent.get("agent_session") or {}).get("value"),
@@ -1767,6 +1831,15 @@ class Dispatcher:
             with self.lock:
                 if item.state in IN_FLIGHT:
                     if self.clock() >= item.verify_until:
+                        try:
+                            screen = self.herdr.read_ansi(item.pane_id, lines=40)
+                        except HerdrError:
+                            pass
+                        else:
+                            self._usage_stops[item.pane_id] = (
+                                self.clock(),
+                                usage_stop(OTHER_ESCAPE.sub("", SGR.sub("", screen))),
+                            )
                         self._finish(item, State.SENT, f"unconfirmed: cannot observe: {exc}")
                     return None
                 if exc.code in TARGET_GONE and item.routed_from:
@@ -2018,6 +2091,8 @@ class Dispatcher:
 
     def _finish(self, item: Item, state: State, reason: str) -> None:
         """End delivery; sent reader commands are done, unshown pointer messages stay filed."""
+        if state is State.SENT and not reason.startswith("shown to ") and self._usage_blocked(item):
+            return
         ended, rider = state, reason.startswith("with ")
         # A pointer line only wakes the reader: its message is sent when the hook shows it, so
         # however the typing ended, an unshown message stays filed rather than counted or lost.

@@ -407,3 +407,37 @@ def test_a_named_wait_returns_at_once_in_another_agents_pane(readers, quick_wait
     monkeypatch.setattr(cli, "own_name", lambda: "xr1")
     assert cli.main(["inbox", "boss", "--wait", "5"]) == 0
     assert not mailbox.hook_log_path(readers).exists()
+
+
+@pytest.mark.parametrize("text", ["/compact", " \t\n/compact", "/"])
+@pytest.mark.parametrize("again", [False, True])
+def test_pending_skips_slash_commands(readers, text, again):
+    mailbox.add(readers, Item("command", text))
+    mailbox.add(readers, Item("normal", "please /compact later"))
+    if again:
+        mailbox.mark(readers, "boss", ["command", "normal"], "shown")
+    assert [m.id for m in mailbox.pending(mailbox.load(readers, "boss"), again=again)] == ["normal"]
+
+
+@pytest.mark.parametrize("event", ["UserPromptSubmit", "SessionStart", "Stop"])
+def test_hooks_ignore_a_command_alone(readers, monkeypatch, capsys, event):
+    mailbox.add(readers, Item("command", " \t/compact"))
+    assert hook(monkeypatch, capsys, event) is None
+    assert mailbox.load(readers, "boss")[0].state == "new"
+
+
+def test_wait_ignores_a_filed_command_then_wakes_for_normal_mail(readers, quick_wait, capsys):
+    thread, result = wait_in_thread(5)
+    try:
+        assert wait_for(lambda: mailbox.waiter_live(readers, "boss", time.time()))
+        mailbox.add(readers, Item("command", " \t/compact"))
+        thread.join(0.3)
+        assert thread.is_alive()
+        assert mailbox.load(readers, "boss")[0].state == "new"
+        mailbox.add(readers, Item("normal", "came after the command"))
+    finally:
+        thread.join(5)
+    assert result["code"] == cli.EXIT_WAKE
+    err = capsys.readouterr().err
+    assert "came after the command" in err and "/compact" not in err
+    assert [m.state for m in mailbox.load(readers, "boss")] == ["new", "read"]

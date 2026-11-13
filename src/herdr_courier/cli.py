@@ -529,7 +529,8 @@ def inbox_hook(root: Path, name: str | None) -> int:
 
     UserPromptSubmit shows new messages; SessionStart (after a compaction or a restart) shows again
     the ones read within the last day but not marked done, since the context that held them may be
-    gone, and marks nothing, since it starts no turn. Stop, at the
+    gone, and marks nothing, since it starts no turn. A slash command is never shown or marked:
+    courier serve types it whole, the only form in which it runs. Stop, at the
     end of a turn, blocks the stop with the new messages as the reason, so an agent that was
     working gets them without anything typed into its pane; with none it lets the agent stop. A
     hook must not break the agent's turn, so every failure is logged and the exit status stays 0.
@@ -584,6 +585,7 @@ def inbox_wait(root: Path, name: str | None, seconds: float) -> int:
     after the turn ended, print it on stderr and exit EXIT_WAKE, which starts a turn in an idle
     session without anything typed into its pane.
 
+    Slash commands never wake the waiter and are not marked shown.
     Messages already new when the wait starts are left to the Stop hook that blocks with them.
     With ``name``, a wait started in another agent's pane returns at once, so the hook can be tried
     on one agent of a shared config dir. One waiter per reader: each writes its own token to

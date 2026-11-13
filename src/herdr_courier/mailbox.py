@@ -6,7 +6,7 @@ agent's context. Each target has one append-only JSON Lines file, ``mailbox/<tar
 courier serve appends a ``message`` record when it queues an item (same id as the journal), and
 the reader appends ``shown`` (a hook put it into the agent's context) and ``done`` (the agent
 acked it). A reader's pane gets only a pointer line per message (core.queue.pointer); the hook
-brings the text. See docs/mailbox.md.
+brings the text. Slash commands are typed whole and excluded from pending mail. See docs/mailbox.md.
 """
 
 import json
@@ -174,14 +174,20 @@ def load_with(root: Path, target: str, ids: list[str]) -> list[Message]:
         time.sleep(0.1)
 
 
+def is_command(text: str) -> bool:
+    """A slash command such as /compact, which the agent reads only as the whole prompt."""
+    return text.lstrip().startswith("/")
+
+
 def pending(messages: list[Message], *, again: bool, now: float | None = None) -> list[Message]:
     """New messages, and with ``again`` (after a compaction) the read ones younger than
-    AGAIN_SECONDS too."""
+    AGAIN_SECONDS too. Slash commands are excluded: only the whole pane prompt runs them."""
     since = (time.time() if now is None else now) - AGAIN_SECONDS
     return [
         m
         for m in messages
-        if m.state == "new" or (again and m.state == "read" and m.created >= since)
+        if not is_command(m.text)
+        and (m.state == "new" or (again and m.state == "read" and m.created >= since))
     ]
 
 

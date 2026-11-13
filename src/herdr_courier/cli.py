@@ -528,7 +528,8 @@ def inbox_hook(root: Path, name: str | None) -> int:
     """For a Claude Code hook: open messages as additionalContext, and nothing when there are none.
 
     UserPromptSubmit shows new messages; SessionStart (after a compaction or a restart) shows every
-    message not yet marked done again, since the context that held them may be gone. Stop, at the
+    message not yet marked done again, since the context that held them may be gone, and marks
+    nothing, since it starts no turn. Stop, at the
     end of a turn, blocks the stop with the new messages as the reason, so an agent that was
     working gets them without anything typed into its pane; with none it lets the agent stop. A
     hook must not break the agent's turn, so every failure is logged and the exit status stays 0.
@@ -569,7 +570,10 @@ def inbox_hook(root: Path, name: str | None) -> int:
         else:
             out = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
         print(json.dumps(out, ensure_ascii=False))
-        mailbox.mark(root, name, [m.id for m in messages], "shown", detail)
+        # Context added at SessionStart starts no turn: a new message stays new, so its item stays
+        # filed and courier types its pointer, whose prompt shows it again and starts the turn.
+        if event != "SessionStart":
+            mailbox.mark(root, name, [m.id for m in messages], "shown", detail)
     except Exception as exc:  # noqa: BLE001 - see the docstring
         print(f"courier inbox --hook: {exc!r}", file=sys.stderr)
     return 0

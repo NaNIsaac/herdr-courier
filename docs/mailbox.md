@@ -50,7 +50,9 @@ prints the open messages as `additionalContext` and records them as shown:
 
 - on UserPromptSubmit, the `new` ones;
 - on SessionStart (after a compaction, resume or restart), every one not `done`, since the context
-  that held them may be gone;
+  that held them may be gone; it records nothing as shown, because a session that has just
+  compacted sits idle with the text in its context, so a `new` message keeps its pointer line (or
+  the wake after the reader goes idle) and the prompt that line makes shows it again;
 - on Stop, at the end of a turn, the `new` ones as the reason of a `"decision": "block"`, so the
   agent goes on with them instead of stopping. An agent that was working when its mail came gets
   it this way, with nothing typed into its pane. With no new message it prints nothing and the

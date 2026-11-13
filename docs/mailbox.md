@@ -49,8 +49,9 @@ matched in `herdr agent list`).
 prints the open messages as `additionalContext` and records them as shown:
 
 - on UserPromptSubmit, the `new` ones;
-- on SessionStart (after a compaction, resume or restart), every one not `done`, since the context
-  that held them may be gone; it records nothing as shown, because a session that has just
+- on SessionStart (after a compaction, resume or restart), the `new` ones and the `read` ones
+  created within the last day, since the context that held them may be gone (older read copies
+  stay in `courier inbox` and are not shown again); it records nothing as shown, because a session that has just
   compacted sits idle with the text in its context, so a `new` message keeps its pointer line (or
   the wake after the reader goes idle) and the prompt that line makes shows it again;
 - on Stop, at the end of a turn, the `new` ones as the reason of a `"decision": "block"`, so the
@@ -60,7 +61,8 @@ prints the open messages as `additionalContext` and records them as shown:
 
 It prints nothing when there is nothing to show or the agent is not a reader. With an empty
 `readers` list it returns before asking herdr for the agent's name. Each message is cut at 2,000
-characters and at most the newest 10 are shown; `courier inbox` prints the rest. The hook always
+characters and at most 10 are shown: the ones the prompt's pointer lines name, then the newest by
+time; `courier inbox` prints the rest. The hook always
 exits 0, so a fault in it cannot block a turn; the fault goes to stderr.
 
 In the settings file of the agent's Claude config dir:

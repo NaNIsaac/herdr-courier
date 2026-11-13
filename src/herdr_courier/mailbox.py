@@ -21,6 +21,9 @@ from typing import Any
 # Per message in hook output; the full text stays in the file and in `courier inbox`.
 HOOK_TEXT_CHARS = 2000
 HOOK_MESSAGES = 10
+# A message already shown comes again after a compaction only while it is this young; older read
+# copies stay in `courier inbox` but no longer fill a new context with last week's mail.
+AGAIN_SECONDS = 86400.0
 
 _unsafe = re.compile(r"[^a-z0-9._-]")
 _pointed = re.compile(r"^\[courier\] ([0-9a-f]{10}) from ", re.MULTILINE)
@@ -156,9 +159,15 @@ def load_with(root: Path, target: str, ids: list[str]) -> list[Message]:
         time.sleep(0.1)
 
 
-def pending(messages: list[Message], *, again: bool) -> list[Message]:
-    """New messages, or with ``again`` (after a compaction) every one not yet done."""
-    return [m for m in messages if m.state == "new" or (again and m.state == "read")]
+def pending(messages: list[Message], *, again: bool, now: float | None = None) -> list[Message]:
+    """New messages, and with ``again`` (after a compaction) the read ones younger than
+    AGAIN_SECONDS too."""
+    since = (time.time() if now is None else now) - AGAIN_SECONDS
+    return [
+        m
+        for m in messages
+        if m.state == "new" or (again and m.state == "read" and m.created >= since)
+    ]
 
 
 def repeat_notes(messages: list[Message], ids: list[str]) -> list[str]:
@@ -177,8 +186,15 @@ def repeat_notes(messages: list[Message], ids: list[str]) -> list[str]:
     return notes
 
 
-def hook_text(target: str, messages: list[Message], notes: Sequence[str] = ()) -> str:
-    shown = messages[-HOOK_MESSAGES:]
+def hook_text(
+    target: str, messages: list[Message], notes: Sequence[str] = (), keep: Sequence[str] = ()
+) -> str:
+    """When more than HOOK_MESSAGES are open, the ones in ``keep`` (the prompt's pointer lines)
+    and then the newest by time are shown, oldest first."""
+    kept = [m for m in messages if m.id in keep][-HOOK_MESSAGES:]
+    rest = sorted((m for m in messages if m.id not in keep), key=lambda m: m.created)
+    room = HOOK_MESSAGES - len(kept)
+    shown = sorted(kept + (rest[-room:] if room else []), key=lambda m: m.created)
     head = (
         f"[courier inbox] {len(messages)} message(s) for {target} not marked done. The pane gets "
         "one [courier] line per message; its text is here. "

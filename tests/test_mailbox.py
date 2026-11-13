@@ -114,6 +114,39 @@ def test_session_start_shows_a_new_message_and_leaves_it_new(readers, monkeypatc
     assert [m.state for m in mailbox.load(readers, "boss")] == ["read"]
 
 
+def test_compaction_leaves_out_read_copies_older_than_a_day(readers, monkeypatch, capsys):
+    old, young = Item("old1", "last week"), Item("young1", "this morning")
+    old.created = time.time() - mailbox.AGAIN_SECONDS - 60
+    young.created = time.time() - 3600
+    for item in (old, young):
+        mailbox.add(readers, item)
+    hook(monkeypatch, capsys, "UserPromptSubmit")
+    again = hook(monkeypatch, capsys, "SessionStart", "compact")["additionalContext"]
+    assert "this morning" in again and "last week" not in again
+    assert [m.state for m in mailbox.load(readers, "boss")] == ["read", "read"]
+
+
+def test_a_capped_show_keeps_the_pointed_message_and_the_newest(readers, monkeypatch, capsys):
+    now = time.time()
+    pointed = Item("a0a0a0a0a0", "the pointed one")
+    pointed.created = now - 7200
+    mailbox.add(readers, pointed)
+    for n in range(mailbox.HOOK_MESSAGES + 5):
+        item = Item(f"n{n:02d}", f"filler {n:02d}")
+        item.created = now - 3600 + n
+        mailbox.add(readers, item)
+    late = Item("late1", "filed late with an early time")
+    late.created = now - 3000
+    mailbox.add(readers, late)
+    line = "[courier] a0a0a0a0a0 from xr1: in your mailbox, courier inbox --show a0a0a0a0a0"
+    text = hook(monkeypatch, capsys, "UserPromptSubmit", prompt=line)["additionalContext"]
+    assert "the pointed one" in text and "filed late with an early time" in text
+    assert "filler 14" in text and "filler 05" not in text
+    shown = [line.split()[1] for line in text.splitlines() if line.startswith("--- ")]
+    assert len(shown) == mailbox.HOOK_MESSAGES and shown[0] == "a0a0a0a0a0"
+    assert "filler 00" not in text
+
+
 def test_hook_is_silent_for_an_agent_that_is_not_a_reader(readers, monkeypatch, capsys):
     mailbox.add(readers, Item("a1", "for xr1", target="xr1"))
     assert hook(monkeypatch, capsys, "UserPromptSubmit", name="xr1") is None

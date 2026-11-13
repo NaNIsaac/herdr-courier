@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- `courier inbox --wait [SECONDS]`, for a Stop hook run with `asyncRewake`: waits for a message
+  filed after the turn ended, prints it on stderr and exits 2 so the idle session wakes with it;
+  one waiter per reader, the newest wins. While a reader's wait is live courier serve types no
+  pointer line for it, and types one as soon as the wait ends without showing the message.
 - After a compaction the hook shows again only the read messages from the last day, not every one
   never acked: a reader with hundreds of old read copies spent its new context on them. When more
   than 10 messages are open, the ones the prompt's pointer lines name are always among those shown,

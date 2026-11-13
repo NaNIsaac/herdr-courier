@@ -29,6 +29,8 @@ _unsafe = re.compile(r"[^a-z0-9._-]")
 _pointed = re.compile(r"^\[courier\] ([0-9a-f]{10}) from ", re.MULTILINE)
 # How long the hook waits for a pointed message that courier serve has not filed yet.
 FILED_WAIT = 2.0
+# A reader's `courier inbox --wait` touches its file every second; older than this, it has ended.
+WAITER_FRESH = 5.0
 _lock = threading.RLock()
 
 
@@ -39,6 +41,19 @@ def mailbox_dir(root: Path) -> Path:
 def path_for(root: Path, target: str) -> Path:
     """``reader`` → mailbox/reader.jsonl; a pane id such as ``w3:pC`` → mailbox/w3_pc.jsonl."""
     return mailbox_dir(root) / f"{_unsafe.sub('_', target.lower())}.jsonl"
+
+
+def wait_path(root: Path, target: str) -> Path:
+    """The file a reader's `courier inbox --wait` keeps its token in and touches while it waits."""
+    return path_for(root, target).with_suffix(".wait")
+
+
+def waiter_live(root: Path, target: str, now: float) -> bool:
+    """Whether a `courier inbox --wait` of ``target`` has touched its file within WAITER_FRESH."""
+    try:
+        return now - wait_path(root, target).stat().st_mtime < WAITER_FRESH
+    except OSError:
+        return False
 
 
 def hook_log_path(root: Path) -> Path:

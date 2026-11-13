@@ -290,6 +290,8 @@ class Dispatcher:
         self._unpointed: set[str] = set()
         self._reader_busy: set[str] = set()
         self._idle_since: dict[str, float] = {}
+        # Filed items left to the reader's `courier inbox --wait`, woken when it ends without them.
+        self._for_waiter: set[str] = set()
         # Ghosts that got Enter again: how often, and when last.
         self._ghost_enters: dict[str, tuple[int, float]] = {}
         self._mailbox_checked = -math.inf
@@ -1171,6 +1173,12 @@ class Dispatcher:
                 states[target] = {m.id: m.state for m in mailbox.load(self.journal.parent, target)}
             except OSError:
                 states[target] = {}
+        wall = self.wall()
+        live = {
+            i.id
+            for i in filed
+            if i.id in self._for_waiter and mailbox.waiter_live(self.journal.parent, i.target, wall)
+        }
         status: dict[str, str] = {}
         for pane_id in {i.pane_id for i in filed if i.pane_id}:
             try:
@@ -1190,7 +1198,10 @@ class Dispatcher:
                     continue
                 if not item.pane_id:
                     continue
-                if self._reader_idle_long(item, status.get(item.pane_id), now):
+                if item.id in self._for_waiter and item.id not in live:
+                    self._forget_filed(item.id)
+                    self._wake(item, "its reader's waiting hook ended without it, pointer typed")
+                elif self._reader_idle_long(item, status.get(item.pane_id), now):
                     self._forget_filed(item.id)
                     self._wake(item, "unshown after the reader went idle, pointer typed")
                 elif (
@@ -1218,6 +1229,7 @@ class Dispatcher:
         return now - since >= IDLE_WAKE_SECONDS
 
     def _forget_filed(self, item_id: str) -> None:
+        self._for_waiter.discard(item_id)
         self._filed_at.pop(item_id, None)
         self._unpointed.discard(item_id)
         self._reader_busy.discard(item_id)
@@ -1403,6 +1415,15 @@ class Dispatcher:
                 terminal=item.terminal,
             )
             if self._refused(item, verdict):
+                return
+            # A reader with a live `courier inbox --wait` is woken by it; a pointer line too
+            # would bring the message twice.
+            if (
+                self._pointed(item)
+                and mailbox.waiter_live(self.journal.parent, item.target, self.wall())
+                and self._await_reader(item, "in the mailbox for the reader's waiting hook")
+            ):
+                self._for_waiter.add(item.id)
                 return
             # A reader that is working gets the message from its Stop hook, and one whose box
             # holds other text from the prompt-submit hook when that text is sent: neither

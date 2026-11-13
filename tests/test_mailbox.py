@@ -1,5 +1,6 @@
 import io
 import json
+import threading
 import time
 
 import pytest
@@ -348,3 +349,61 @@ def test_a_pointer_left_in_the_box_keeps_its_message_filed_until_shown(
     hook(monkeypatch, capsys, "UserPromptSubmit", prompt="something else")
     monkeypatch.setattr("herdr_courier.core.queue.MAILBOX_EVERY", 0.0)
     assert wait_for(lambda: d.items[item["id"]].state == "sent")
+
+
+@pytest.fixture
+def quick_wait(monkeypatch):
+    monkeypatch.setattr(cli, "WAIT_POLL", 0.05)
+    monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"hook_event_name":"Stop"}'))
+
+
+def wait_in_thread(seconds):
+    result = {}
+    thread = threading.Thread(
+        target=lambda: result.update(code=cli.main(["inbox", "boss", "--wait", str(seconds)]))
+    )
+    thread.start()
+    return thread, result
+
+
+def test_wait_wakes_with_a_message_filed_after_it_started(readers, quick_wait, capsys):
+    mailbox.add(readers, Item("a1", "handled by the Stop hook"))
+    thread, result = wait_in_thread(5)
+    time.sleep(0.3)
+    assert mailbox.waiter_live(readers, "boss", time.time())
+    mailbox.add(readers, Item("b2", "came while idle"))
+    thread.join(5)
+    assert result["code"] == cli.EXIT_WAKE
+    err = capsys.readouterr().err
+    assert "came while idle" in err and "handled by the Stop hook" not in err
+    assert [m.state for m in mailbox.load(readers, "boss")] == ["new", "read"]
+    log = mailbox.hook_log_path(readers).read_text(encoding="utf-8")
+    assert "boss Stop/wait shown=b2 " in log
+
+
+def test_wait_ends_quietly_at_its_limit(readers, quick_wait, capsys):
+    mailbox.add(readers, Item("a1", "already new"))
+    assert cli.main(["inbox", "boss", "--wait", "0.3"]) == 0
+    assert capsys.readouterr().err == ""
+    assert "boss Stop/wait timed out" in mailbox.hook_log_path(readers).read_text(encoding="utf-8")
+
+
+def test_a_newer_waiter_takes_over(readers, quick_wait, capsys):
+    first, first_result = wait_in_thread(5)
+    time.sleep(0.3)
+    second, second_result = wait_in_thread(5)
+    first.join(5)
+    assert first_result["code"] == 0
+    mailbox.add(readers, Item("c3", "for the newest waiter"))
+    second.join(5)
+    assert second_result["code"] == cli.EXIT_WAKE
+    log = mailbox.hook_log_path(readers).read_text(encoding="utf-8")
+    assert log.count("Stop/wait stepped aside") == 1
+
+
+def test_a_named_wait_returns_at_once_in_another_agents_pane(readers, quick_wait, monkeypatch):
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:p2")
+    monkeypatch.setattr(cli, "own_name", lambda: "xr1")
+    assert cli.main(["inbox", "boss", "--wait", "5"]) == 0
+    assert not mailbox.hook_log_path(readers).exists()

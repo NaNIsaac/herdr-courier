@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- The SessionStart hook no longer marks the messages it shows: a message filed while its reader
+  was compacting was counted as sent and the reader sat idle with it in its context. It now stays
+  filed until a prompt or Stop hook shows it, so its pointer line still starts a turn.
 - courier knows its own text in an input box also when the box wrapped it onto more rows or shows
   it as a `[Pasted text #N +K lines]` placeholder, and presses Enter again on a ghost every minute,
   up to 3 more times, while the agent is idle and unfocused (a reader's pointer line: focused too)

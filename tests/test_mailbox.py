@@ -102,6 +102,18 @@ def test_hook_shows_each_message_once_and_again_after_compaction(readers, monkey
     assert log[1].endswith("bytes=0")
 
 
+def test_session_start_shows_a_new_message_and_leaves_it_new(readers, monkeypatch, capsys):
+    mailbox.add(readers, Item("c3c3c3c3c3", "filed while compacting"))
+    shown = hook(monkeypatch, capsys, "SessionStart", "compact")
+    assert "filed while compacting" in shown["additionalContext"]
+    assert [m.state for m in mailbox.load(readers, "boss")] == ["new"]
+
+    line = "[courier] c3c3c3c3c3 from xr1: in your mailbox, courier inbox --show c3c3c3c3c3"
+    pointer = hook(monkeypatch, capsys, "UserPromptSubmit", prompt=line)
+    assert "filed while compacting" in pointer["additionalContext"]
+    assert [m.state for m in mailbox.load(readers, "boss")] == ["read"]
+
+
 def test_hook_is_silent_for_an_agent_that_is_not_a_reader(readers, monkeypatch, capsys):
     mailbox.add(readers, Item("a1", "for xr1", target="xr1"))
     assert hook(monkeypatch, capsys, "UserPromptSubmit", name="xr1") is None

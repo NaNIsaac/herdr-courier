@@ -582,8 +582,10 @@ def inbox_wait(root: Path, name: str | None, seconds: float) -> int:
 
     Messages already new when the wait starts are left to the Stop hook that blocks with them.
     With ``name``, a wait started in another agent's pane returns at once, so the hook can be tried
-    on one agent of a shared config dir. One waiter per reader: each writes its own token to mailbox/<name>.wait and a waiter whose
-    token was replaced by a newer one exits 0, as it does after ``seconds``.
+    on one agent of a shared config dir. One waiter per reader: each writes its own token to
+    mailbox/<name>.wait and a waiter whose token was replaced by a newer one exits 0, as it does
+    after ``seconds``. The waiter touches that file every poll, and while it is fresh courier
+    serve types no pointer line, so the message comes once.
     """
     if sys.stdin is not None and not sys.stdin.isatty():
         sys.stdin.read()
@@ -595,7 +597,7 @@ def inbox_wait(root: Path, name: str | None, seconds: float) -> int:
         elif os.environ.get("HERDR_PANE_ID") and own_name() != name:
             # A hook in a config dir several agents share, limited to one of them.
             return 0
-        lock = mailbox.mailbox_dir(root) / f"{mailbox.path_for(root, name).stem}.wait"
+        lock = mailbox.wait_path(root, name)
         lock.parent.mkdir(parents=True, exist_ok=True)
         token = uuid.uuid4().hex
         lock.write_text(token, encoding="utf-8")
@@ -609,6 +611,8 @@ def inbox_wait(root: Path, name: str | None, seconds: float) -> int:
             if lock.read_text(encoding="utf-8") != token:
                 mailbox.log_hook(root, f"{name} Stop/wait stepped aside pid={os.getpid()}")
                 return 0
+            # While this file is fresh, courier serve files new messages without a pointer line.
+            os.utime(lock)
             stamp = path.stat().st_mtime_ns if path.exists() else None
             if stamp == seen:
                 continue

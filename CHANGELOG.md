@@ -4,7 +4,8 @@
 
 - `courier inbox --wait [SECONDS]`, for a Stop hook run with `asyncRewake`: waits for a message
   filed after the turn ended, prints it on stderr and exits 2 so the idle session wakes with it;
-  one waiter per reader, the newest wins.
+  one waiter per reader, the newest wins. While a reader's wait is live courier serve types no
+  pointer line for it, and types one as soon as the wait ends without showing the message.
 - courier knows its own text in an input box also when the box wrapped it onto more rows or shows
   it as a `[Pasted text #N +K lines]` placeholder, and presses Enter again on a ghost every minute,
   up to 3 more times, while the agent is idle and unfocused (a reader's pointer line: focused too)

@@ -103,7 +103,10 @@ since Claude Code enforces it on an `asyncRewake` hook:
 `courier inbox NAME --wait` waits only in the pane of agent NAME and returns at once in any
 other pane, so the hook can be tried on one agent of a config dir several agents share.
 
-The pointer line stays: when nothing woke the reader, its message is still filed and typed.
+The wait touches `mailbox/<name>.wait` every second. While that file is under 5 seconds old,
+courier serve files a new message for the reader without typing its pointer line, so the message
+comes once; when the wait ends without showing it (time-out, killed, or replaced), the message
+gets its pointer line at once. The idle wake and the 5 minute re-wakes stay as they are.
 
 ## Pointer lines
 

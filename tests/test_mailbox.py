@@ -326,6 +326,7 @@ def test_wait_wakes_with_a_message_filed_after_it_started(readers, quick_wait, c
     mailbox.add(readers, Item("a1", "handled by the Stop hook"))
     thread, result = wait_in_thread(5)
     time.sleep(0.3)
+    assert mailbox.waiter_live(readers, "boss", time.time())
     mailbox.add(readers, Item("b2", "came while idle"))
     thread.join(5)
     assert result["code"] == cli.EXIT_WAKE

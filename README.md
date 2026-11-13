@@ -479,6 +479,8 @@ to the new name on its first start.
 Every setting has a built-in default. To change one, copy
 [config.example.toml](config.example.toml) to `config.toml` in the state directory and keep the
 keys you change. An unknown key or a wrong type is an error, which `courier doctor` reports.
+`COURIER_CONFIG` names another file to read instead, for settings kept with the rest of a
+profile; that file must exist.
 
 | key | default | |
 | --- | --- | --- |

@@ -27,6 +27,39 @@ def test_file_overrides_only_what_it_sets(state_dir):
     assert loaded.doctor == config.Doctor()
 
 
+def test_courier_config_names_a_file_outside_the_state_directory(state_dir, tmp_path, monkeypatch):
+    (state_dir / "config.toml").write_text("[delivery]\nmerge_chars = 0\n", encoding="utf-8")
+    elsewhere = tmp_path / "profile" / "courier.toml"
+    elsewhere.parent.mkdir()
+    elsewhere.write_text('[ovis]\npanes = ["lead"]\n', encoding="utf-8")
+    monkeypatch.setenv("COURIER_CONFIG", str(elsewhere))
+    assert config.config_path(state_dir) == elsewhere
+    loaded = config.load()
+    assert loaded.path == elsewhere
+    assert loaded.ovis.panes == ("lead",)
+    assert loaded.delivery.merge_chars == defaults.DELIVERY_MERGE_CHARS
+
+
+def test_courier_config_naming_a_missing_file_is_an_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("COURIER_CONFIG", str(tmp_path / "gone.toml"))
+    with pytest.raises(config.ConfigError, match="gone.toml: not found"):
+        config.load()
+
+
+def test_doctor_names_the_courier_config_file(state_dir, tmp_path, monkeypatch):
+    from herdr_courier import doctor
+
+    named = tmp_path / "courier.toml"
+    named.write_text("", encoding="utf-8")
+    monkeypatch.setenv("COURIER_CONFIG", str(named))
+    check, _ = doctor.check_config(state_dir, None)
+    assert check.level is doctor.Level.OK
+    assert check.detail == f"{named} (COURIER_CONFIG)"
+    named.unlink()
+    check, _ = doctor.check_config(state_dir, None)
+    assert check.level is doctor.Level.FAIL and "not found" in check.detail
+
+
 def test_merge_chars_zero_turns_merging_off(state_dir):
     assert config.load().delivery.merge_chars == defaults.DELIVERY_MERGE_CHARS
     (state_dir / "config.toml").write_text("[delivery]\nmerge_chars = 0\n", encoding="utf-8")

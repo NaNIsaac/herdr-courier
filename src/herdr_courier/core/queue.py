@@ -249,7 +249,8 @@ class Dispatcher:
 
         A message for an agent in ``pointer_for`` (mailbox readers, whose hook shows the text from
         the mailbox) is typed as one ``pointer`` line, so the text reaches the agent once; a slash
-        command is still typed whole."""
+        command is still typed whole and marked done once sent. Already read or done messages
+        are finished without typing their pointer, including riders in a merged prompt."""
         self.herdr = herdr
         self.journal = journal
         self.clock = clock
@@ -1141,6 +1142,15 @@ class Dispatcher:
             return None
         return next((m.state for m in filed if m.id == item.id), None)
 
+    def _finish_shown(self, item: Item) -> bool:
+        """Finish an already shown pointer message without typing it (lock held)."""
+        if self._reader_state(item) not in ("read", "done"):
+            return False
+        self._forget_filed(item.id)
+        self._rewakes.pop(item.id, None)
+        self._finish(item, State.SENT, f"shown to {item.target} by its hook")
+        return True
+
     def _await_reader(self, item: Item, reason: str) -> bool:
         """Leave ``item`` in its reader's mailbox for the hook to show (lock held). False when
         it is not a filed, unshown pointer message, which then goes on as typed text."""
@@ -1405,6 +1415,8 @@ class Dispatcher:
         with self.lock:
             if item.state in FINAL:
                 return
+            if self._finish_shown(item):
+                return
             empty_for = self._empty_for(pane_id, obs.line, now)
             verdict = check(
                 obs,
@@ -1477,6 +1489,8 @@ class Dispatcher:
                 self._empty_for(pane_id, final.line, now)
                 self._set(item, State.WAITING, f"{verdict.reason} (at final check)")
                 return
+            if self._finish_shown(item):
+                return
             # Journalled before the write: after a crash from here on the item is replayed as
             # FAILED and a cancel is refused, so the message can never be written twice. The
             # same holds for each message typed in with it.
@@ -1544,7 +1558,8 @@ class Dispatcher:
         They keep their order, so the first one that cannot go stops the rest: one in flight or
         backing off, a human message behind agent ones or the reverse, one bound to another
         receiver, one about to go back to its unrouted name, a slash command, or one past the
-        size limit. A slash command at the head goes alone too."""
+        size limit. Already shown pointer messages are finished and omitted. A slash command at
+        the head goes alone too."""
         queue = self.queues.get(pane_id, [])
         if (
             self.merge_chars <= 0
@@ -1558,6 +1573,8 @@ class Dispatcher:
         riders = []
         for item_id in queue[1:]:
             item = self.items[item_id]
+            if self._finish_shown(item):
+                continue
             size += 2 + len(_framed(item))
             if (
                 item.state not in (State.QUEUED, State.WAITING)
@@ -2000,12 +2017,19 @@ class Dispatcher:
         self.lock.notify_all()
 
     def _finish(self, item: Item, state: State, reason: str) -> None:
+        """End delivery; sent reader commands are done, unshown pointer messages stay filed."""
         ended, rider = state, reason.startswith("with ")
         # A pointer line only wakes the reader: its message is sent when the hook shows it, so
         # however the typing ended, an unshown message stays filed rather than counted or lost.
         if state in POINTER_ENDS and self._reader_state(item) == "new":
             state, reason = State.FILED, f"pointer {state.value}: {reason}"
             self._filed_at[item.id] = self.clock()
+        if (
+            state is State.SENT
+            and item.target in self.pointer_for
+            and mailbox.is_command(item.text)
+        ):
+            mailbox.mark(self.journal.parent, item.target, [item.id], "done", "serve")
         self._set(item, state, reason)
         state = ended
         # A rider's text is part of its head's, which is reported for both.

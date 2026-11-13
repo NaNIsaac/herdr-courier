@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- A message for a mailbox reader is `sent` only when the reader's hook has shown it. Until then it
+  is `filed`: a reader that is working or has other text in its input box gets no pointer line and
+  no longer holds up the messages behind it, a pointer line left in the box keeps its message
+  filed instead of lost, an unshown message gets its pointer typed again up to 3 times, and filed
+  messages survive a restart.
+- `courier inbox --hook` on Stop hands the agent its new messages at the end of its turn, so a
+  working agent gets its mail without anything typed into its pane.
+
 - courier's own notices to a mailbox reader, such as a ghost report, are filed in its mailbox
   before their pointer line is typed; before, the pointer led to nothing and the text was lost.
   A notice that cannot be filed is typed in full.

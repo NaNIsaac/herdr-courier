@@ -215,7 +215,7 @@ def cmd_send(args: argparse.Namespace) -> int:
             print(f"{len(files)} file(s) in {folder}")
         return 0
     budget = None if args.timeout is None else args.timeout / 1000
-    while item["state"] not in ("sent", "failed", "cancelled", "rejected", "ghost"):
+    while item["state"] not in ("sent", "filed", "failed", "cancelled", "rejected", "ghost"):
         left = 60.0 if budget is None else budget - (time.monotonic() - started)
         if left <= 0:
             print(f"timeout: {item['id']} is {item['state']}: {item['reason']}", file=sys.stderr)
@@ -225,6 +225,8 @@ def cmd_send(args: argparse.Namespace) -> int:
     print(f"{item['state']} {item['id']} to {item['target']} ({item['pane_id']}): {item['reason']}")
     if folder:
         print(f"{len(files)} file(s) in {folder}")
+    if item["state"] == "filed":
+        return 0
     if item["state"] != "sent":
         return EXIT_FAILED
     wait = ["herdr", "agent", "wait", item["pane_id"]]
@@ -299,6 +301,9 @@ def render_status(reply: dict[str, Any], *, width: int, recent: int, now: float)
     for name, info in held.items():
         out.append(f"{name}  held until it is back")
         pending(info["pending"])
+    if status.get("filed"):
+        out.append("filed, waiting for the reader's hook:")
+        pending(status["filed"])
     if status["recent"]:
         out.append("recent:")
         for item in status["recent"][-recent:]:
@@ -519,8 +524,10 @@ def inbox_hook(root: Path, name: str | None) -> int:
     """For a Claude Code hook: open messages as additionalContext, and nothing when there are none.
 
     UserPromptSubmit shows new messages; SessionStart (after a compaction or a restart) shows every
-    message not yet marked done again, since the context that held them may be gone. A hook must
-    not break the agent's turn, so every failure is logged and the exit status stays 0.
+    message not yet marked done again, since the context that held them may be gone. Stop, at the
+    end of a turn, blocks the stop with the new messages as the reason, so an agent that was
+    working gets them without anything typed into its pane; with none it lets the agent stop. A
+    hook must not break the agent's turn, so every failure is logged and the exit status stays 0.
     """
     try:
         raw = sys.stdin.read() if not sys.stdin.isatty() else ""
@@ -551,7 +558,12 @@ def inbox_hook(root: Path, name: str | None) -> int:
         mailbox.log_hook(root, f"{name} {detail} shown={ids} bytes={len(text.encode())}")
         if not text:
             return 0
-        out = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
+        if event == "Stop":
+            if not messages:
+                return 0
+            out = {"decision": "block", "reason": text}
+        else:
+            out = {"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}}
         print(json.dumps(out, ensure_ascii=False))
         mailbox.mark(root, name, [m.id for m in messages], "shown", detail)
     except Exception as exc:  # noqa: BLE001 - see the docstring

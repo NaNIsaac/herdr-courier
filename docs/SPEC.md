@@ -46,6 +46,7 @@ The existing flat journal and API records retain their field names and order thr
 | `cancelled` | Explicit cancellation before submission. Final. |
 | `rejected` | A fresh receiver usage-limit response was observed after submission. Final; never automatically replayed. |
 | `ghost` | Courier text remains after one Enter retry, or an exact/safe retry cannot be proved. Final; text is left in place. |
+| `filed` | A mailbox reader's message that its hook has not shown yet: the pointer line was typed (however that ended), or the reader was working or had other text in its box. Not in the pane queue. Becomes `sent` once the hook shows it; may have its pointer typed again. |
 
 The worker is the only pane writer. Ordinary traffic is FIFO per pane; human priority, routing
 and release of held traffic can affect ordering. One write can carry several messages: when the
@@ -67,6 +68,8 @@ rejections use exponential backoff and a five-attempt limit. Only `agent_blocked
 
 On restart, queued/waiting work is queued again (name-held work remains held). A record already
 submitting/verifying with a pane becomes failed with delivery unknown; its text is never replayed.
+A filed message, or a submitting/verifying pointer whose message the reader has not been shown,
+stays `filed`.
 The journal also binds pending work to a herdr server socket, preventing replay onto another server.
 Recent ghost/rejected records are retained up to the normal finished-item limit without
 requeuing, preserving guarded recovery/status across restarts.

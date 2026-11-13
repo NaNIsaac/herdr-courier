@@ -523,9 +523,9 @@ def own_name() -> str | None:
 def inbox_hook(root: Path, name: str | None) -> int:
     """For a Claude Code hook: open messages as additionalContext, and nothing when there are none.
 
-    UserPromptSubmit shows new messages; SessionStart (after a compaction or a restart) shows every
-    message not yet marked done again, since the context that held them may be gone, and marks
-    nothing, since it starts no turn. Stop, at the
+    UserPromptSubmit shows new messages; SessionStart (after a compaction or a restart) shows again
+    the ones read within the last day but not marked done, since the context that held them may be
+    gone, and marks nothing, since it starts no turn. Stop, at the
     end of a turn, blocks the stop with the new messages as the reason, so an agent that was
     working gets them without anything typed into its pane; with none it lets the agent stop. A
     hook must not break the agent's turn, so every failure is logged and the exit status stays 0.
@@ -544,13 +544,13 @@ def inbox_hook(root: Path, name: str | None) -> int:
             *resume_for,
         ):
             return 0
-        messages, notes = [], []
+        messages, notes, pointed = [], [], []
         if name in readers:
             pointed = mailbox.pointed_ids(payload.get("prompt") or "")
             filed = mailbox.load_with(root, name, pointed)
             messages = mailbox.pending(filed, again=event == "SessionStart")
             notes = mailbox.repeat_notes(filed, pointed)
-        text = mailbox.hook_text(name, messages, notes) if messages or notes else ""
+        text = mailbox.hook_text(name, messages, notes, pointed) if messages or notes else ""
         if name in resume_for and event == "SessionStart":
             tasks, banner, _ = task_list(root)
             tasks = [t for t in tasks if name in {t["from"], t["to"]}]

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- After a compaction the hook shows again only the read messages from the last day, not every one
+  never acked: a reader with hundreds of old read copies spent its new context on them. When more
+  than 10 messages are open, the ones the prompt's pointer lines name are always among those shown,
+  and the rest are the newest by time.
 - The SessionStart hook no longer marks the messages it shows: a message filed while its reader
   was compacting was counted as sent and the reader sat idle with it in its context. It now stays
   filed until a prompt or Stop hook shows it, so its pointer line still starts a turn.

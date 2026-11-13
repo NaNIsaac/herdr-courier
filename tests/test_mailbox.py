@@ -196,6 +196,16 @@ def test_inbox_lists_open_messages_and_refuses_unknown_ids(state_dir, capsys):
     assert "no message zz" in capsys.readouterr().err
 
 
+def test_showing_a_message_by_id_marks_it_shown(state_dir, capsys):
+    mailbox.add(state_dir, Item("a1", "first"))
+    mailbox.add(state_dir, Item("b2", "second"))
+    assert cli.main(["inbox", "boss", "--show", "a1"]) == 0
+    assert "first" in capsys.readouterr().out
+    assert {m.id: m.state for m in mailbox.load(state_dir, "boss")} == {"a1": "read", "b2": "new"}
+    assert cli.main(["inbox", "boss"]) == 0
+    assert {m.id: m.state for m in mailbox.load(state_dir, "boss")}["b2"] == "new"
+
+
 def test_a_line_cut_short_by_a_crash_is_skipped(state_dir):
     mailbox.add(state_dir, Item("a1", "first"))
     with mailbox.path_for(state_dir, "boss").open("a", encoding="utf-8") as f:

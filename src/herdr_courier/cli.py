@@ -593,6 +593,9 @@ def cmd_inbox(args: argparse.Namespace) -> int:
         if args.show
         else [m for m in messages if args.all or m.state != "done"]
     )
+    # A reader without a live hook reads by id from its pointer line: that is its delivery.
+    if args.show:
+        mailbox.mark(root, name, [m.id for m in chosen if m.state == "new"], "shown", "show")
     if args.json:
         print(
             json.dumps(

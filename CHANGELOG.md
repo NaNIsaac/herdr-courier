@@ -8,6 +8,10 @@
   and the box holds exactly that text.
 - A mailbox reader's focused pane gets its pointer line once the box has stayed empty for 30 s,
   since one pane is always focused, often an idle agent nobody watches.
+- `courier inbox --show ID` marks the message shown, so a reader without a live hook ends the item
+  by reading it.
+- A message filed while its reader was working gets its pointer line about 10 s after the reader
+  goes idle when no Stop hook has shown it, instead of after the 5 minute re-wake.
 
 - A message for a mailbox reader is `sent` only when the reader's hook has shown it. Until then it
   is `filed`: a reader that is working or has other text in its input box gets no pointer line and

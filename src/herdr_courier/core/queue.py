@@ -47,6 +47,9 @@ ROUTE_MISSED = "not routed: "
 MAILBOX_EVERY = 2.0
 REWAKE_SECONDS = 300.0
 REWAKES = 3
+# A reader seen busy and then idle this long with the message still unshown had no Stop hook to
+# bring it: the pointer line goes at once instead of after REWAKE_SECONDS.
+IDLE_WAKE_SECONDS = 10.0
 # A ghost whose text is still in the box gets Enter pressed again this often, at most this many
 # times, whenever the pane is idle, unfocused (a reader's pointer: focused too) and still holds
 # exactly that text.
@@ -282,6 +285,11 @@ class Dispatcher:
         # Filed items: when they were filed or last woken, and how often they were woken again.
         self._filed_at: dict[str, float] = {}
         self._rewakes: dict[str, int] = {}
+        # Filed items no pointer line was typed for yet; of those, the ones whose reader was
+        # seen busy, and since when it has been idle again.
+        self._unpointed: set[str] = set()
+        self._reader_busy: set[str] = set()
+        self._idle_since: dict[str, float] = {}
         # Ghosts that got Enter again: how often, and when last.
         self._ghost_enters: dict[str, tuple[int, float]] = {}
         self._mailbox_checked = -math.inf
@@ -1144,47 +1152,81 @@ class Dispatcher:
         self._unqueue(item)
         self._set(item, State.FILED, reason)
         self._filed_at[item.id] = self.clock()
+        self._unpointed.add(item.id)
         return True
 
     def _check_filed(self) -> None:
         """End each filed message its reader's hook has shown; type the pointer line again for
-        one left unshown REWAKE_SECONDS, at most REWAKES times."""
+        one left unshown REWAKE_SECONDS, at most REWAKES times, and at once for one whose reader
+        was busy and has been idle IDLE_WAKE_SECONDS without its Stop hook bringing it."""
         with self.lock:
             self._mailbox_checked = now = self.clock()
             filed = [self.items[i] for i in self._filed_at if i in self.items]
             stale = [i for i in self._filed_at if i not in self.items]
             for item_id in stale:
-                self._filed_at.pop(item_id, None)
+                self._forget_filed(item_id)
         states: dict[str, dict[str, str]] = {}
         for target in {i.target for i in filed}:
             try:
                 states[target] = {m.id: m.state for m in mailbox.load(self.journal.parent, target)}
             except OSError:
                 states[target] = {}
+        status: dict[str, str] = {}
+        for pane_id in {i.pane_id for i in filed if i.pane_id}:
+            try:
+                status[pane_id] = self.herdr.agent_get(pane_id).get("agent_status", "unknown")
+            except HerdrError:
+                continue
         with self.lock:
             for item in filed:
                 if item.state is not State.FILED:
-                    self._filed_at.pop(item.id, None)
+                    self._forget_filed(item.id)
                     continue
                 state = states[item.target].get(item.id)
                 if state in ("read", "done"):
-                    self._filed_at.pop(item.id, None)
+                    self._forget_filed(item.id)
                     self._rewakes.pop(item.id, None)
                     self._finish(item, State.SENT, f"shown to {item.target} by its hook")
+                    continue
+                if not item.pane_id:
+                    continue
+                if self._reader_idle_long(item, status.get(item.pane_id), now):
+                    self._forget_filed(item.id)
+                    self._wake(item, "unshown after the reader went idle, pointer typed")
                 elif (
                     now - self._filed_at[item.id] >= REWAKE_SECONDS
                     and self._rewakes.get(item.id, 0) < REWAKES
-                    and item.pane_id
                 ):
                     self._rewakes[item.id] = self._rewakes.get(item.id, 0) + 1
-                    self._filed_at.pop(item.id, None)
-                    item.retry_at = 0.0
-                    self._set(
-                        item,
-                        State.QUEUED,
-                        f"unshown, pointer typed again ({self._rewakes[item.id]}/{REWAKES})",
+                    self._forget_filed(item.id)
+                    self._wake(
+                        item, f"unshown, pointer typed again ({self._rewakes[item.id]}/{REWAKES})"
                     )
-                    self._push(item, in_order=True)
+
+    def _reader_idle_long(self, item: Item, status: str | None, now: float) -> bool:
+        """Whether the reader of filed ``item`` was seen busy and has since been idle for
+        IDLE_WAKE_SECONDS (lock held)."""
+        if status in ("working", "blocked") and item.id in self._unpointed:
+            self._reader_busy.add(item.id)
+            self._idle_since.pop(item.id, None)
+            return False
+        if item.id not in self._unpointed:
+            return False
+        if status not in ("idle", "done") or item.id not in self._reader_busy:
+            return False
+        since = self._idle_since.setdefault(item.id, now)
+        return now - since >= IDLE_WAKE_SECONDS
+
+    def _forget_filed(self, item_id: str) -> None:
+        self._filed_at.pop(item_id, None)
+        self._unpointed.discard(item_id)
+        self._reader_busy.discard(item_id)
+        self._idle_since.pop(item_id, None)
+
+    def _wake(self, item: Item, reason: str) -> None:
+        item.retry_at = 0.0
+        self._set(item, State.QUEUED, reason)
+        self._push(item, in_order=True)
 
     def _report_ghosts(self) -> None:
         """Tell someone other than the receiver that courier text was left in its input box.

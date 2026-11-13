@@ -1,5 +1,12 @@
 from herdr_courier import mailbox
-from herdr_courier.core.queue import REWAKE_SECONDS, REWAKES, Dispatcher, State, pointer
+from herdr_courier.core.queue import (
+    IDLE_WAKE_SECONDS,
+    REWAKE_SECONDS,
+    REWAKES,
+    Dispatcher,
+    State,
+    pointer,
+)
 
 
 def reader(herdr, clock, tmp_path, **kw):
@@ -38,6 +45,33 @@ def test_an_unshown_message_is_woken_again_a_few_times_then_left_filed(herdr, cl
         run(d, REWAKE_SECONDS + 10)
     assert pane.submitted == [pointer(item)] * (1 + REWAKES)
     assert item.state is State.FILED
+
+
+def test_a_message_filed_for_a_working_reader_gets_its_pointer_soon_after_it_goes_idle(
+    herdr, clock, tmp_path, run
+):
+    pane = herdr.add("w1:p1", "boss", status="working", box="half typed")
+    d = reader(herdr, clock, tmp_path)
+    item = d.enqueue("boss", "courier: a notice", source="courier")
+    run(d, 10)
+    assert item.state is State.FILED and pane.submit_calls == 0
+    pane.status, pane.box = "idle", ""
+    run(d, IDLE_WAKE_SECONDS + 10)
+    assert pane.submitted == [pointer(item)]
+    assert item.state is State.FILED
+    mailbox.mark(tmp_path, "boss", [item.id], "shown", "UserPromptSubmit")
+    run(d, 5)
+    assert item.state is State.SENT
+
+
+def test_a_reader_that_never_worked_waits_for_the_usual_rewake(herdr, clock, tmp_path, run):
+    pane = herdr.add("w1:p1", "boss", box="half typed")
+    d = reader(herdr, clock, tmp_path)
+    item = d.enqueue("boss", "courier: a notice", source="courier")
+    run(d, 10)
+    assert item.state is State.FILED
+    run(d, IDLE_WAKE_SECONDS + 30)
+    assert pane.submit_calls == 0 and item.state is State.FILED
 
 
 def test_a_filed_message_stays_filed_across_a_restart(herdr, clock, tmp_path, run):

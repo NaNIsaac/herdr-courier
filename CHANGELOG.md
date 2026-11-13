@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A Claude Code pane stopped by its usage limit no longer counts typed messages as sent:
+  pointers stay filed and plain messages wait, with the stop line in status, one probe every
+  10 minutes, and delivery resumes once the stop clears.
 - A slash command serve typed for a mailbox reader is marked done, so `courier inbox` no longer
   lists old `/compact` lines as open.
 - Serve checks the mailbox right before typing a pointer line: a message the Stop hook already

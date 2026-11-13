@@ -96,6 +96,17 @@ it is not running.
 
 ## Send conditions
 
+A Claude Code usage stop pauses delivery: a stop message ("You're out of usage credits", "You've
+hit your limit" and the like) as the last reply above the input box, below the last echoed
+prompt, within 15 non-empty lines. Status shows `usage stop in pane: <line>`: a mailbox pointer
+stays `filed` with its copy still new, and a plain message stays `waiting`, also when the stop
+appears after submit. Courier types no text or keys while the stop shows and reads the pane at
+most once a minute. The stop clears when a later prompt is echoed (someone switched the model)
+or the line leaves the pane. A stop line stays on screen after the limit resets and comes back
+with a resumed session, so every 10 minutes one held message is typed as a probe; if the stop
+answers it again, it is held again. Automatic continuation notices do not pause delivery. A
+Codex limit is not held: the message ends `rejected` (`codex_usage_limit`).
+
 All of these, observed again right before writing (a second `agent get` and box read):
 
 1. Agent status is `idle`, `done` or `working` (Claude Code queues a prompt that arrives while it

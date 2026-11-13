@@ -1,5 +1,12 @@
+from herdr_courier import mailbox
 from herdr_courier.core.inputline import InputLine, LineState, matches
-from herdr_courier.core.queue import GHOST_ENTER_SECONDS, GHOST_ENTERS, State, pointer
+from herdr_courier.core.queue import (
+    FOCUSED_READER_GRACE,
+    GHOST_ENTER_SECONDS,
+    GHOST_ENTERS,
+    State,
+    pointer,
+)
 
 
 def typed(text):
@@ -71,10 +78,37 @@ def test_a_pointer_left_in_a_readers_box_gets_enter_again(herdr, make_dispatcher
     assert pane.enter_calls == first + 1
 
 
-def test_nothing_is_typed_into_a_focused_readers_pane(herdr, make_dispatcher, run):
+def test_a_focused_idle_reader_with_an_empty_box_gets_its_pointer_after_a_grace(
+    herdr, make_dispatcher, run, tmp_path
+):
     pane = herdr.add("w1:p1", "boss", focused=True)
     d = make_dispatcher(pointer_for=("boss",))
     item = d.enqueue("boss", "courier: a notice", source="courier")
-    run(d, 20)
+    run(d, FOCUSED_READER_GRACE - 5)
+    assert pane.submit_calls == 0 and item.state is State.WAITING
+    run(d, 15)
+    assert pane.submitted == [pointer(item)]
+    assert item.state is State.FILED
+    mailbox.mark(tmp_path, "boss", [item.id], "shown", "UserPromptSubmit")
+    run(d, 5)
+    assert item.state is State.SENT
+
+
+def test_a_focused_reader_with_text_in_its_box_gets_nothing_typed(herdr, make_dispatcher, run):
+    pane = herdr.add("w1:p1", "boss", focused=True, box="owner typing")
+    d = make_dispatcher(pointer_for=("boss",))
+    item = d.enqueue("boss", "courier: a notice", source="courier")
+    run(d, FOCUSED_READER_GRACE + 20)
     assert item.state is State.FILED and item.reason.startswith("in the mailbox for the hook")
     assert pane.submit_calls == 0
+
+
+def test_a_pointer_left_in_a_focused_readers_box_gets_enter_again(herdr, make_dispatcher, run):
+    pane = herdr.add("w1:p1", "boss", submit_mode="stuck", focused=True)
+    d = make_dispatcher(pointer_for=("boss",))
+    item = d.enqueue("boss", "courier: a notice", source="courier")
+    run(d, FOCUSED_READER_GRACE + 20)
+    assert pane.box == pointer(item)
+    first = pane.enter_calls
+    run(d, GHOST_ENTER_SECONDS + 10)
+    assert pane.enter_calls == first + 1

@@ -48,9 +48,11 @@ MAILBOX_EVERY = 2.0
 REWAKE_SECONDS = 300.0
 REWAKES = 3
 # A ghost whose text is still in the box gets Enter pressed again this often, at most this many
-# times, whenever the pane is idle, unfocused and still holds exactly that text.
+# times, whenever the pane is idle, unfocused (a reader's pointer: focused too) and still holds
+# exactly that text.
 GHOST_ENTER_SECONDS = 60.0
 GHOST_ENTERS = 3
+FOCUSED_READER_GRACE = 30.0
 
 
 class State(StrEnum):
@@ -1101,7 +1103,8 @@ class Dispatcher:
     def _enter_ghosts(self) -> None:
         """Press Enter again on courier's own text left in a box, so an idle agent is not left
         with it until someone looks. The same guards as the first retry apply: exactly the
-        message in the box, an idle unfocused agent with the same session, and no hold."""
+        message in the box, an idle agent with the same session, no hold, and no focus unless
+        the text is a reader's pointer line."""
         now = self.clock()
         with self.lock:
             due = [
@@ -1347,11 +1350,12 @@ class Dispatcher:
         with self.lock:
             if item.state in FINAL:
                 return
+            empty_for = self._empty_for(pane_id, obs.line, now)
             verdict = check(
                 obs,
                 session=item.session,
                 hold=self._hold_reason(pane_id, now),
-                empty_for=self._empty_for(pane_id, obs.line, now),
+                empty_for=empty_for,
                 settle=settle,
                 settled_for=self._settled_for(pane_id, obs, now),
                 terminal=item.terminal,
@@ -1361,24 +1365,29 @@ class Dispatcher:
             # A reader that is working gets the message from its Stop hook, and one whose box
             # holds other text from the prompt-submit hook when that text is sent: neither
             # waits for the box, and the messages behind it do not wait either.
-            # A focused pane may be someone about to type: nothing is typed there for a reader
-            # either, since what that person sends brings the message.
             if (
-                (obs.focused or not verdict.ok)
-                and (
-                    obs.focused
-                    or obs.status in ("working", "blocked")
-                    or obs.line.state is LineState.TYPED
-                )
-                and self._await_reader(
-                    item,
-                    "in the mailbox for the hook: "
-                    + ("pane focused" if verdict.ok else verdict.reason),
-                )
+                not verdict.ok
+                and (obs.status in ("working", "blocked") or obs.line.state is LineState.TYPED)
+                and self._await_reader(item, "in the mailbox for the hook: " + verdict.reason)
             ):
                 return
             if not verdict.ok:
                 self._set(item, State.WAITING, verdict.reason)
+                return
+            # One pane is always focused, often an idle agent nobody watches, so focus cannot
+            # stop the pointer line that wakes it. A longer empty box narrows the clash with
+            # someone starting to type, which costs only the pointer: the hook brings the text.
+            if (
+                obs.focused
+                and self._pointed(item)
+                and (empty_for is None or empty_for < FOCUSED_READER_GRACE)
+            ):
+                self._set(
+                    item,
+                    State.WAITING,
+                    f"debounce: focused reader, input must stay empty for "
+                    f"{FOCUSED_READER_GRACE:.0f} s",
+                )
                 return
         # Observe again right before writing, all conditions and not only the box, to narrow
         # the window in which a human, a hold or a new agent could appear.
@@ -1550,6 +1559,7 @@ class Dispatcher:
             if (
                 final.status not in ("idle", "done")
                 or final.focused
+                and not self._pointed(item)
                 or self._hold_reason(item.pane_id, self.clock())
                 or not (item.session or item.terminal)
                 or item.session

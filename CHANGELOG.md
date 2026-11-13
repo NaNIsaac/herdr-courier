@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- courier knows its own text in an input box also when the box wrapped it onto more rows or shows
+  it as a `[Pasted text #N +K lines]` placeholder, and presses Enter again on a ghost every minute,
+  up to 3 more times, while the agent is idle and unfocused and the box holds exactly that text.
+- Nothing is typed into a focused pane of a mailbox reader; the message stays filed for its hook.
+
 - A message for a mailbox reader is `sent` only when the reader's hook has shown it. Until then it
   is `filed`: a reader that is working or has other text in its input box gets no pointer line and
   no longer holds up the messages behind it, a pointer line left in the box keeps its message

@@ -183,6 +183,8 @@ def test_failed_submit_fails_the_riders_too(herdr, make_dispatcher, run):
 def test_merged_ghost_can_be_submitted_by_hand_after_a_restart(
     herdr, clock, tmp_path, run, monkeypatch
 ):
+    # About the first Enter retry; later Enters on a ghost are tested in test_ghost_enter.py.
+    monkeypatch.setattr("herdr_courier.core.queue.GHOST_ENTERS", 0)
     journal = tmp_path / "journal.jsonl"
     pane = herdr.add("w1:p1", submit_mode="stuck", terminal="term")
     first = Dispatcher(herdr, journal, clock=clock, wall=clock, log=lambda _: None)

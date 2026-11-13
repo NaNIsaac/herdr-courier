@@ -277,6 +277,13 @@ def classify(screen: str, *, queued: str | None = None) -> InputLine:
 _PASTED = re.compile(r"\[Pasted text #\d+ \+(\d+) lines\]")
 
 
+def _wrapped(shown: str, expected: str) -> bool:
+    """``shown`` is ``expected`` with soft wraps: a row break with the box's two-space indent
+    between any two characters, or in place of a space."""
+    parts = [r"(?: |\n  )" if c == " " else re.escape(c) for c in expected]
+    return re.fullmatch(r"(?:\n  )?".join(parts), shown) is not None
+
+
 def holds(line: InputLine, sent: str) -> bool:
     """True when the box still shows the start of a message we submitted."""
     if line.state is not LineState.TYPED:
@@ -296,7 +303,7 @@ def matches(line: InputLine, sent: str) -> bool:
     text = sent.replace("\r\n", "\n").strip()
     if not text:
         return False
-    if " ".join(line.text.split()) == " ".join(text.split()):
+    if _wrapped(line.text, "\n  ".join(text.split("\n"))):
         return True
     pasted = _PASTED.fullmatch(line.text.strip())
     return bool(pasted) and int(pasted.group(1)) in (text.count("\n"), text.count("\n") + 1)

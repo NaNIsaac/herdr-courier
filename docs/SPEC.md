@@ -45,7 +45,7 @@ The existing flat journal and API records retain their field names and order thr
 | `failed` | Delivery cannot continue safely, retries/hold expired, or an in-flight journal entry was recovered after restart. Final. |
 | `cancelled` | Explicit cancellation before submission. Final. |
 | `rejected` | A fresh receiver usage-limit response was observed after submission. Final; never automatically replayed. |
-| `ghost` | Courier text remains after one Enter retry, or an exact/safe retry cannot be proved. Final; text is left in place. |
+| `ghost` | Courier text remains after one Enter retry, or an exact/safe retry cannot be proved. The text is left in place; while it stays exactly in the box of an idle, unfocused agent with the same session and no hold, Enter is pressed again once a minute, at most 3 times. |
 | `filed` | A mailbox reader's message that its hook has not shown yet: the pointer line was typed (however that ended), or the reader was working or had other text in its box. Not in the pane queue. Becomes `sent` once the hook shows it; may have its pointer typed again. |
 
 The worker is the only pane writer. Ordinary traffic is FIFO per pane; human priority, routing

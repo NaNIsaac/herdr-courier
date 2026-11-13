@@ -1183,66 +1183,6 @@ class Dispatcher:
                     )
                     self._push(item, in_order=True)
 
-    def _reader_state(self, item: Item) -> str | None:
-        """The mailbox state (new, read, done) of an item typed as a pointer line, or None."""
-        if not self._pointed(item):
-            return None
-        try:
-            filed = mailbox.load(self.journal.parent, item.target)
-        except OSError:
-            return None
-        return next((m.state for m in filed if m.id == item.id), None)
-
-    def _await_reader(self, item: Item, reason: str) -> bool:
-        """Leave ``item`` in its reader's mailbox for the hook to show (lock held). False when
-        it is not a filed, unshown pointer message, which then goes on as typed text."""
-        if self._reader_state(item) != "new":
-            return False
-        self._unqueue(item)
-        self._set(item, State.FILED, reason)
-        self._filed_at[item.id] = self.clock()
-        return True
-
-    def _check_filed(self) -> None:
-        """End each filed message its reader's hook has shown; type the pointer line again for
-        one left unshown REWAKE_SECONDS, at most REWAKES times."""
-        with self.lock:
-            self._mailbox_checked = now = self.clock()
-            filed = [self.items[i] for i in self._filed_at if i in self.items]
-            stale = [i for i in self._filed_at if i not in self.items]
-            for item_id in stale:
-                self._filed_at.pop(item_id, None)
-        states: dict[str, dict[str, str]] = {}
-        for target in {i.target for i in filed}:
-            try:
-                states[target] = {m.id: m.state for m in mailbox.load(self.journal.parent, target)}
-            except OSError:
-                states[target] = {}
-        with self.lock:
-            for item in filed:
-                if item.state is not State.FILED:
-                    self._filed_at.pop(item.id, None)
-                    continue
-                state = states[item.target].get(item.id)
-                if state in ("read", "done"):
-                    self._filed_at.pop(item.id, None)
-                    self._rewakes.pop(item.id, None)
-                    self._finish(item, State.SENT, f"shown to {item.target} by its hook")
-                elif (
-                    now - self._filed_at[item.id] >= REWAKE_SECONDS
-                    and self._rewakes.get(item.id, 0) < REWAKES
-                    and item.pane_id
-                ):
-                    self._rewakes[item.id] = self._rewakes.get(item.id, 0) + 1
-                    self._filed_at.pop(item.id, None)
-                    item.retry_at = 0.0
-                    self._set(
-                        item,
-                        State.QUEUED,
-                        f"unshown, pointer typed again ({self._rewakes[item.id]}/{REWAKES})",
-                    )
-                    self._push(item, in_order=True)
-
     def _report_ghosts(self) -> None:
         """Tell someone other than the receiver that courier text was left in its input box.
 

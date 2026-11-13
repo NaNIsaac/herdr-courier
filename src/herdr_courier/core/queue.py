@@ -47,6 +47,10 @@ ROUTE_MISSED = "not routed: "
 MAILBOX_EVERY = 2.0
 REWAKE_SECONDS = 300.0
 REWAKES = 3
+# A ghost whose text is still in the box gets Enter pressed again this often, at most this many
+# times, whenever the pane is idle, unfocused and still holds exactly that text.
+GHOST_ENTER_SECONDS = 60.0
+GHOST_ENTERS = 3
 
 
 class State(StrEnum):
@@ -276,6 +280,8 @@ class Dispatcher:
         # Filed items: when they were filed or last woken, and how often they were woken again.
         self._filed_at: dict[str, float] = {}
         self._rewakes: dict[str, int] = {}
+        # Ghosts that got Enter again: how often, and when last.
+        self._ghost_enters: dict[str, tuple[int, float]] = {}
         self._mailbox_checked = -math.inf
         # For an item typed in with others: the merged prompt, and the ids that rode with it.
         self._carried: dict[str, str] = {}
@@ -1089,6 +1095,33 @@ class Dispatcher:
                     self._stall(item, f"dispatcher error: {exc!r}")
         if self._ghosts:
             self._report_ghosts()
+        if self._ghosted:
+            self._enter_ghosts()
+
+    def _enter_ghosts(self) -> None:
+        """Press Enter again on courier's own text left in a box, so an idle agent is not left
+        with it until someone looks. The same guards as the first retry apply: exactly the
+        message in the box, an idle unfocused agent with the same session, and no hold."""
+        now = self.clock()
+        with self.lock:
+            due = [
+                self.items[i]
+                for i in self._ghosted
+                if i in self.items
+                and self.items[i].state in (State.GHOST, State.FILED)
+                and self.items[i].pane_id
+                and self._ghost_enters.get(i, (0, -math.inf))[0] < GHOST_ENTERS
+                and now - self._ghost_enters.get(i, (0, -math.inf))[1] >= GHOST_ENTER_SECONDS
+            ]
+        for item in due:
+            count = self._ghost_enters.get(item.id, (0, 0.0))[0] + 1
+            self._ghost_enters[item.id] = (count, now)
+            try:
+                self._retry_enter(item, manual=True)
+            except DispatchError as exc:
+                self.log(f"courier: {item.id} left in {item.pane_id}, Enter not pressed: {exc}")
+                continue
+            self.log(f"courier: pressed Enter again on {item.id} left in {item.pane_id}")
 
     def _reader_state(self, item: Item) -> str | None:
         """The mailbox state (new, read, done) of an item typed as a pointer line, or None."""
@@ -1328,10 +1361,20 @@ class Dispatcher:
             # A reader that is working gets the message from its Stop hook, and one whose box
             # holds other text from the prompt-submit hook when that text is sent: neither
             # waits for the box, and the messages behind it do not wait either.
+            # A focused pane may be someone about to type: nothing is typed there for a reader
+            # either, since what that person sends brings the message.
             if (
-                not verdict.ok
-                and (obs.status in ("working", "blocked") or obs.line.state is LineState.TYPED)
-                and self._await_reader(item, f"in the mailbox for the hook: {verdict.reason}")
+                (obs.focused or not verdict.ok)
+                and (
+                    obs.focused
+                    or obs.status in ("working", "blocked")
+                    or obs.line.state is LineState.TYPED
+                )
+                and self._await_reader(
+                    item,
+                    "in the mailbox for the hook: "
+                    + ("pane focused" if verdict.ok else verdict.reason),
+                )
             ):
                 return
             if not verdict.ok:

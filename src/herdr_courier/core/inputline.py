@@ -274,6 +274,9 @@ def classify(screen: str, *, queued: str | None = None) -> InputLine:
     return InputLine(LineState.TYPED, text, f"typed {text[:60]!r}")
 
 
+_PASTED = re.compile(r"\[Pasted text #\d+ \+(\d+) lines\]")
+
+
 def holds(line: InputLine, sent: str) -> bool:
     """True when the box still shows the start of a message we submitted."""
     if line.state is not LineState.TYPED:
@@ -283,11 +286,20 @@ def holds(line: InputLine, sent: str) -> bool:
 
 
 def matches(line: InputLine, sent: str) -> bool:
-    """Prove complete ownership; a shared prefix is insufficient for a recovery keystroke."""
+    """Prove complete ownership; a shared prefix is insufficient for a recovery keystroke.
+
+    The box may show the message wrapped onto more rows than it has lines, which only moves
+    whitespace, or, for a long paste, as one ``[Pasted text #N +K lines]`` placeholder whose K
+    fits the message's line count."""
     if line.state is not LineState.TYPED:
         return False
     text = sent.replace("\r\n", "\n").strip()
-    return bool(text) and line.text == "\n  ".join(text.split("\n"))
+    if not text:
+        return False
+    if " ".join(line.text.split()) == " ".join(text.split()):
+        return True
+    pasted = _PASTED.fullmatch(line.text.strip())
+    return bool(pasted) and int(pasted.group(1)) in (text.count("\n"), text.count("\n") + 1)
 
 
 def rejection(screen: str) -> str | None:
